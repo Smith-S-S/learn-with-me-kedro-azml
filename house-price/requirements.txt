@@ -1,0 +1,15 @@
+ipython
+jupyterlab
+kedro
+notebook
+pandas
+scikit-learn
+kedro-datasets
+
+# --- API layer (main.py) ---
+fastapi          # the web framework that turns our model into an API
+uvicorn          # the web server that actually runs FastAPI
+pydantic         # validates incoming JSON (comes with FastAPI, pinned for clarity)
+
+# --- Drift monitoring ---
+evidently        # compares old vs new data to detect drift

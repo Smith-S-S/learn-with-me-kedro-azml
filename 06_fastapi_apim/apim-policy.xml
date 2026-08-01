@@ -1,0 +1,203 @@
+<!--
+=============================================================================
+ AZURE APIM POLICY : the "security guard" rules for the House Price API
+=============================================================================
+ HOW TO READ THIS FILE
+   A policy is a list of instructions APIM runs on every single call.
+   There are four sections, and they run in this order:
+
+     <inbound>   BEFORE the call reaches your FastAPI  (security lives here)
+     <backend>   the actual forwarding to your FastAPI
+     <outbound>  AFTER FastAPI replies, before the caller sees it
+     <on-error>  only if something went wrong
+
+   Order matters. Cheap checks go first: reject a bad caller before wasting
+   effort on them.
+
+ WHERE TO PASTE THIS
+   Azure Portal, then API Management, then APIs, then your API,
+   then Design, then Inbound processing, then the  </>  icon
+
+ BEFORE IT WORKS, REPLACE THESE THREE THINGS:
+   1. the openid-config URL   with your ADFS or Entra ID address
+   2. the <audience>          with your API's Application ID URI
+   3. the backend base-url    with where your FastAPI actually runs
+
+ TWO XML GOTCHAS THAT WILL BITE YOU
+   1. You cannot write two dashes in a row inside an XML comment. That is why
+      the dividers in this file use equals signs instead.
+   2. Inside an attribute you must write &quot; instead of a plain quote mark.
+      That is why the conditions below look slightly odd. This is normal in
+      APIM policies, not a mistake.
+=============================================================================
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <!--
+        =====================================================================
+        RULE 1: let /health through with NO token.
+        =====================================================================
+        WHY: Kubernetes and Azure both call /health constantly to check the app
+        is alive. They are machines. They have no login and no token. If we
+        demanded a token here, every health check would fail with 401, Azure
+        would decide the app is broken, and it would kill and restart your pods
+        forever. This is a real and very common outage.
+
+        So: if the path ends in /health, skip the checks and pass through.
+        -->
+        <choose>
+            <when condition="@(context.Request.Url.Path.EndsWith(&quot;/health&quot;))">
+                <!-- deliberately empty: no checks, just pass through -->
+            </when>
+            <otherwise>
+
+                <!--
+                =============================================================
+                RULE 2: everything else must show a valid token.
+                =============================================================
+                validate-jwt does all of this for you:
+                  * finds the token in the "Authorization: Bearer xxx" header
+                  * downloads the public signing key from your ADFS or Entra ID
+                  * checks the signature is genuine (not forged or edited)
+                  * checks the token has not expired
+                  * checks it was issued FOR this API (the audience)
+
+                If ANY of that fails, APIM replies 401 immediately and your
+                FastAPI is never even contacted.
+                -->
+                <validate-jwt
+                    header-name="Authorization"
+                    failed-validation-httpcode="401"
+                    failed-validation-error-message="Unauthorized. Provide a valid token."
+                    require-expiration-time="true"
+                    require-signed-tokens="true"
+                    clock-skew="300">
+
+                    <!--
+                    CHOOSE ONE of the two lines below.
+
+                    (a) ADFS, a server your company runs itself, on-premises:
+                    -->
+                    <openid-config url="https://adfs.yourcompany.com/adfs/.well-known/openid-configuration" />
+
+                    <!--
+                    (b) Entra ID, the cloud version. Swap in your tenant id:
+                    <openid-config url="https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0/.well-known/openid-configuration" />
+                    -->
+
+                    <!--
+                    AUDIENCE means "who was this token made for?"
+                    WHY IT MATTERS: without this check, a token issued for the
+                    HR app would also open YOUR api. This single line stops
+                    tokens being reused across systems.
+                    -->
+                    <audiences>
+                        <audience>api://house-price</audience>
+                    </audiences>
+
+                    <!--
+                    ISSUER means "who made this token?"
+                    Stops someone pointing a lookalike identity server at you.
+                    -->
+                    <issuers>
+                        <issuer>https://adfs.yourcompany.com/adfs/services/trust</issuer>
+                    </issuers>
+                </validate-jwt>
+
+                <!--
+                =============================================================
+                RULE 3: the retrain endpoint needs MORE than a valid token.
+                =============================================================
+                WHY: POST /pipeline/run retrains the model. It is slow, it costs
+                real compute money, and a careless call can replace a good model
+                with a worse one. "Any logged-in employee" is not good enough.
+
+                So we additionally require the token to carry a group claim
+                naming the ML admins. A valid token WITHOUT that claim gets 403.
+
+                401 means "I do not know you."
+                403 means "I know you, but no."
+                -->
+                <choose>
+                    <when condition="@(context.Request.Url.Path.Contains(&quot;/pipeline/run&quot;))">
+                        <validate-jwt header-name="Authorization"
+                                      failed-validation-httpcode="403"
+                                      failed-validation-error-message="Admin role required to retrain the model.">
+                            <openid-config url="https://adfs.yourcompany.com/adfs/.well-known/openid-configuration" />
+                            <audiences>
+                                <audience>api://house-price</audience>
+                            </audiences>
+                            <!-- The caller's token must contain this group claim. -->
+                            <required-claims>
+                                <claim name="groups" match="any">
+                                    <value>ml-platform-admins</value>
+                                </claim>
+                            </required-claims>
+                        </validate-jwt>
+                    </when>
+                </choose>
+
+            </otherwise>
+        </choose>
+
+        <!--
+        =====================================================================
+        RULE 4: rate limiting, to stop one caller flooding the service.
+        =====================================================================
+        WHY: a buggy client stuck in a loop can send thousands of calls a second
+        and take the model down for everyone. This caps each caller at 100 calls
+        per minute. The limit is enforced HERE, so the flood never reaches your
+        Python code at all.
+        -->
+        <rate-limit-by-key
+            calls="100"
+            renewal-period="60"
+            counter-key="@(context.Subscription?.Id ?? context.Request.IpAddress)" />
+
+        <!--
+        =====================================================================
+        RULE 5: point at the real FastAPI.
+        =====================================================================
+        Replace this with wherever your container actually runs: the Azure
+        Container App URL, or the Kubernetes ingress address from Part 4.
+        -->
+        <set-backend-service base-url="https://house-price-api.internal.company.com" />
+    </inbound>
+
+    <backend>
+        <!--
+        forward-request actually sends the call on to FastAPI.
+        The timeout matters: /predict is fast, but if the backend hangs we want
+        to give up rather than leave the caller waiting forever.
+        -->
+        <forward-request timeout="60" />
+    </backend>
+
+    <outbound>
+        <base />
+        <!--
+        Strip any header that leaks details about our internals. An attacker who
+        knows your exact server software can look up its known weaknesses.
+        -->
+        <set-header name="X-Powered-By" exists-action="delete" />
+        <set-header name="Server" exists-action="delete" />
+    </outbound>
+
+    <on-error>
+        <base />
+        <!--
+        WHY: by default an error can echo an internal stack trace back to the
+        caller, which tells an attacker how your system is built. We replace it
+        with a deliberately boring message. The real error is still recorded in
+        APIM's own logs, where your team can see it and the public cannot.
+        -->
+        <set-body>@{
+            return new JObject(
+                new JProperty("error", "Request failed."),
+                new JProperty("requestId", context.RequestId)
+            ).ToString();
+        }</set-body>
+    </on-error>
+</policies>

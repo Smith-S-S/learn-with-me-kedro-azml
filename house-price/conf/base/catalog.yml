@@ -1,0 +1,28 @@
+# =============================================================================
+# THE DATA CATALOG
+# -----------------------------------------------------------------------------
+# This file is Kedro's "address book" for data. Instead of writing
+# pd.read_csv(...) or joblib.dump(...) inside your code, you DECLARE here where
+# each dataset lives and what format it is. Your Python nodes then just refer to
+# the name (e.g. "house_data") and Kedro handles loading/saving automatically.
+#
+# WHY this is great: to switch from a local file to Azure cloud storage later,
+# you only change THIS file -- your Python code never changes. That is exactly
+# what makes moving to Azure easy in the later parts.
+#
+# Any name used in a node but NOT listed here (like X_train) is kept in memory
+# only -- Kedro calls these "MemoryDataset" and they vanish after the run.
+# =============================================================================
+
+house_data:
+  type: pandas.CSVDataset
+  filepath: data/01_raw/house_data.csv
+
+regressor:
+  type: pickle.PickleDataset          # saves the trained model to a file
+  filepath: data/06_models/regressor.pickle
+  versioned: true                     # keeps a timestamped copy of every model
+
+metrics:
+  type: json.JSONDataset
+  filepath: data/08_reporting/metrics.json

@@ -1,0 +1,49 @@
+# A "CronJob" = a Job that Kubernetes creates automatically on a schedule.
+# This is how you say "retrain the house-price model every night at 2 AM".
+#
+# Apply:      kubectl apply -f kedro-cronjob.yaml
+# Inspect:    kubectl get cronjobs
+# Test now:   kubectl create job manual-run --from=cronjob/kedro-nightly
+# Remove:     kubectl delete -f kedro-cronjob.yaml
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kedro-nightly
+
+spec:
+  # ┌ minute (0-59)
+  # │ ┌ hour (0-23)
+  # │ │ ┌ day of month (1-31)
+  # │ │ │ ┌ month (1-12)
+  # │ │ │ │ ┌ day of week (0-6, Sunday = 0)
+  # * * * * *      "*" means "every"
+  schedule: "0 2 * * *"        # 02:00, every day
+
+  timeZone: "Asia/Kolkata"     # without this, the schedule uses UTC
+  concurrencyPolicy: Forbid    # if the last run is still going, skip this one
+                               # (Allow = run in parallel, Replace = kill the old)
+  successfulJobsHistoryLimit: 3   # keep the last 3 successes for log inspection
+  failedJobsHistoryLimit: 3       # and the last 3 failures
+
+  jobTemplate:                 # ↓ identical to kedro-job.yaml from here down
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: kedro
+              # ⚠️ CHANGE THIS to your own ACR image in Part 7
+              image: myregistry.azurecr.io/house-price:v1
+              command: ["python", "-m", "kedro", "run"]
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "1"
+                  memory: "1Gi"
+              env:
+                - name: KEDRO_ENV
+                  value: "base"

@@ -1,0 +1,27 @@
+# =============================================================================
+# PARAMETERS = the "settings dials" for your pipeline.
+# -----------------------------------------------------------------------------
+# These are values your code reads but that are NOT data. Keeping them here
+# (instead of hard-coded in Python) means you can change how the pipeline
+# behaves WITHOUT touching code. In the nodes we read them via "params:...".
+# Kedro loads this file using its OmegaConfigLoader (one of the building blocks
+# from your documentation).
+# =============================================================================
+
+# How the dummy dataset is generated:
+n_houses: 200
+seed: 42
+
+# How the model is trained and tested:
+model_options:
+  test_size: 0.2            # keep 20% of houses hidden for a fair test
+  random_state: 42          # makes the split repeatable
+  features:                 # the input columns (what we know)
+    - size_sqft
+    - num_bedrooms
+    - age_years
+  target: price             # the column we predict
+
+welcome_message:
+  start : start
+  end : end 

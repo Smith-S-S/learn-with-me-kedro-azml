@@ -1,0 +1,55 @@
+# A Kubernetes "Job" = run this container ONCE, until it finishes successfully.
+# Our Kedro pipeline trains a model and exits, so Job is the correct object.
+# (A "Deployment" would restart it forever, because Deployments assume your
+#  program is a server that should never exit.)
+#
+# Apply it with:   kubectl apply -f kedro-job.yaml
+# Watch it with:   kubectl get pods
+# Read output:     kubectl logs job/kedro-house-price
+# Remove it:       kubectl delete -f kedro-job.yaml
+
+apiVersion: batch/v1          # which part of the Kubernetes API describes Jobs
+kind: Job                     # the type of object we are asking for
+metadata:
+  name: kedro-house-price     # the name you'll use in kubectl commands
+
+spec:
+  backoffLimit: 2             # if it fails, retry at most 2 more times
+  ttlSecondsAfterFinished: 3600   # auto-delete the finished Job after 1 hour
+                                  # (housekeeping, so old Jobs don't pile up)
+
+  template:                   # ↓ everything below describes the Pod to create
+    spec:
+      restartPolicy: Never    # required for Jobs: don't restart a finished pod
+
+      containers:
+        - name: kedro
+          # ⚠️ CHANGE THIS in Part 7 to your own image in ACR, e.g.
+          #    myregistry.azurecr.io/house-price:v1
+          image: myregistry.azurecr.io/house-price:v1
+
+          # imagePullPolicy: when to re-download the image.
+          #   IfNotPresent = only if the node doesn't already have it (default)
+          #   Always       = every run; use this while tags like ":latest" move
+          imagePullPolicy: IfNotPresent
+
+          # The command that runs inside the container. This is exactly what you
+          # type on your laptop today.
+          command: ["python", "-m", "kedro", "run"]
+
+          # Resources = how much of the machine this pod may use.
+          #   requests = the guaranteed minimum (used to decide WHICH node)
+          #   limits   = the hard ceiling (exceeding memory = pod is killed)
+          # "500m" CPU means 500 milli-cores = half of one CPU core.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+
+          # Environment variables passed into the container.
+          env:
+            - name: KEDRO_ENV
+              value: "base"        # which conf/ folder Kedro should use

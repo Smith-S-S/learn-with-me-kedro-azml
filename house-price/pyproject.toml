@@ -1,0 +1,41 @@
+[build-system]
+requires = [
+    "setuptools",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+requires-python = ">=3.10"
+name = "house_price"
+readme = "README.md"
+dynamic = [
+    "version",
+]
+dependencies = [
+    "ipython>=8.10",
+    "jupyterlab>=3.0",
+    "notebook",
+    "kedro~=1.4.0",
+]
+
+[project.scripts]
+house-price-new = "house_price.__main__:main"
+
+[project.entry-points."kedro.hooks"]
+
+[tool.setuptools.dynamic.version]
+attr = "house_price.__version__"
+
+[tool.setuptools.packages.find]
+where = [
+    "src",
+]
+namespaces = false
+
+[tool.kedro]
+package_name = "house_price"
+project_name = "house-price-new"
+kedro_init_version = "1.4.0"
+tools = "['Data Structure']"
+example_pipeline = "False"
+source_dir = "src"
