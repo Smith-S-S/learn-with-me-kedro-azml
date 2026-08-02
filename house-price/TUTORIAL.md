@@ -311,7 +311,104 @@ POST /predict         -> {"predicted_price":465276.13,"currency":"USD"}
 GET  /metrics         -> {"mae":11494.25,"r2":0.9929}
 POST /pipeline/run    -> {"status":"accepted",...}   (new model version written)
 ```
+---
+# The WHY -> *Model Loading* <- Without Lifespan vs With Lifespan
 
+## Without Lifespan
+
+```python
+model = joblib.load("model.joblib")
+
+app = FastAPI()
+```
+
+### Flow
+
+```
+Start server
+    |
+    Load model
+    |
+    Error happens ❌
+    |
+    Server crashes
+```
+
+### Example
+
+```
+model.joblib is missing
+```
+
+Result:
+
+```
+FileNotFoundError
+
+API never starts
+```
+
+---
+
+# With Lifespan
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    try:
+        model = load_model()
+    except Exception:
+        model = None
+
+    yield
+```
+
+### Flow
+
+```
+Start server
+    |
+    Try loading model
+    |
+    Error happens
+    |
+    Catch error
+    |
+    Server still starts ✅
+```
+
+### Example
+
+```
+model.joblib is missing
+```
+
+Result:
+
+```
+Warning: model not found
+```
+
+API starts:
+
+```
+GET /health  -> OK
+
+/predict -> "Model not available"
+```
+
+---
+
+# Simple Difference
+
+| | Without Lifespan | With Lifespan |
+|---|---|---|
+| Model loading error | Application crashes | Error can be handled |
+| Server startup control | No | Yes |
+| Shutdown handling | No | Yes |
+| Production usage | Less flexible | Recommended |
 ---
 
 # Next up (Part 3)
