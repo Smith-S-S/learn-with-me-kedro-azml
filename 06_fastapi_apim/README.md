@@ -22,6 +22,171 @@ and then a **security guard** in front of that door.
    [ Kedro model ]
 ```
 
+---
+
+# First, properly: what ARE these two things?
+
+Before any commands, let's slow down on the two words your organization uses
+every day. Both exist to solve a problem you only feel once a company gets big.
+
+## ADFS — the company's own passport office
+
+### The problem it solves
+Imagine your company has 50 internal apps: payroll, expenses, the HR portal, the
+ML platform. The naive design gives each one its own username and password.
+
+That is a disaster:
+- You memorise 50 passwords, so you reuse one weak password everywhere.
+- Someone leaves the company and IT must remember to delete 50 accounts. They
+  miss three. Those three are now unlocked doors, forever.
+- Each app stores passwords, so each app is a place passwords can leak from.
+
+### The fix: one place that proves who you are
+**ADFS (Active Directory Federation Services)** is a Microsoft server your
+company runs **itself**, usually inside its own building. It has exactly one
+job: *check who you are, once, and then vouch for you to everything else.*
+
+> **Think of it as a passport office.**
+> You prove your identity to the passport office **one time**, with real
+> documents. It gives you a **passport**. After that, every border guard in the
+> world trusts the passport — they never re-check your birth certificate. They
+> only check the passport is genuine and unexpired.
+
+In this analogy:
+- **Passport office** = ADFS
+- **Passport** = the **token** (a JWT)
+- **Border guard** = APIM
+- **The country you're entering** = your FastAPI
+
+Now when someone leaves the company, IT disables **one** account in Active
+Directory and every single app locks them out at once. That is the whole point.
+
+### What "Federation" means (the F in ADFS)
+Federation is just a fancy word for **"I trust your passport office."**
+
+Two companies, or a company and Microsoft's cloud, agree in advance to trust
+each other's tokens. So a token issued by *your company's* ADFS is accepted by
+*Microsoft's* cloud services, without Microsoft ever seeing your password.
+
+That is why many organizations run **both**: ADFS on-premises for staff logins,
+**federated** up to Entra ID so cloud apps work too.
+
+### Why would a company keep ADFS instead of moving to the cloud?
+
+| Reason | What it means in practice |
+|---|---|
+| **Regulation** | Banks, insurers and consultancies are often required to keep identity data inside their own walls. |
+| **Data sovereignty** | Passwords and staff records never leave the building. |
+| **Existing investment** | It already works, and identity is the scariest thing to migrate. |
+| **Custom rules** | Fine-grained control over exactly which claims go into a token. |
+
+### ADFS vs Entra ID, side by side
+
+| | **ADFS** | **Entra ID** |
+|---|---|---|
+| Where it runs | Your company's own servers | Microsoft's cloud |
+| Who maintains it | Your IT team (patching, backups, uptime) | Microsoft |
+| Old name | — | Azure AD |
+| Cost | Servers + staff time | Per-user licence |
+| Setup for you | Company already did it | Company already did it |
+| **How APIM checks its tokens** | **Identical** | **Identical** |
+
+That last row is the point worth remembering: **you do not learn two systems.**
+Both hand out standard JWTs. The APIM policy is the same; only one URL differs.
+
+---
+
+## APIM — the front desk
+
+### The problem it solves
+Every API needs the same boring, security-critical chores:
+
+1. Check the caller is who they claim to be
+2. Stop one caller flooding the service
+3. Write down who called what, for auditing
+4. Hide the real server address from the internet
+5. Keep old versions working when you release a new one
+
+Now imagine your company has 30 APIs. Without APIM, **all 30 teams write all 5
+of those things themselves.** They will each get it slightly wrong, in different
+ways, and nobody will know which ones are wrong until there's a breach.
+
+### The fix: do it once, in front of everything
+**APIM (Azure API Management)** is a managed service that sits **in front of**
+your APIs. Every call goes to APIM first. APIM does the boring chores, then
+forwards only the calls that survived.
+
+> **Think of it as a hotel front desk.**
+> Guests don't wander straight to the rooms. They stop at reception, which
+> checks their booking, hands over a key card that only opens *their* room,
+> writes their arrival in the log, and turns away anyone without a reservation.
+> The rooms themselves have no idea any of this happened.
+
+Your FastAPI is the room. It just does its job, assuming whoever knocked was
+already checked.
+
+### What APIM actually does for you
+
+| Job | What it means | What you'd otherwise write |
+|---|---|---|
+| **Authentication** | Verify the token is genuine | JWT signature + expiry + audience checks, in every API |
+| **Rate limiting** | "Max 100 calls a minute" | A counter, shared across all your servers |
+| **Caching** | Repeat questions answered instantly | Your own cache layer |
+| **Logging** | Every call recorded | Logging plumbing in every service |
+| **Hiding the backend** | The world never learns your real server address | A separate reverse proxy |
+| **Versioning** | `/v1` and `/v2` live side by side | Routing logic in your app |
+| **Transformation** | Rewrite headers, strip fields | Middleware in every API |
+
+### The name for this pattern
+APIM is an **API gateway**. "Gateway" is the general term — APIM is Azure's
+specific product. AWS calls theirs API Gateway; open-source ones include Kong
+and Nginx. Same idea everywhere: **one guarded door in front of many services.**
+
+---
+
+## Putting it together: one call, start to finish
+
+A colleague's web app wants a price for a 2000 sqft house. Here is every step:
+
+```
+1. App    -> ADFS      "I'm the pricing web app. Here's my secret. Give me a token."
+2. ADFS   -> App       "Verified. Here's a JWT. It expires in 1 hour."
+                        Inside: who you are, your groups, expiry, and a SIGNATURE.
+
+3. App    -> APIM      POST /predict  {"size_sqft":2000,...}
+                       Header:  Authorization: Bearer eyJhbGciOi...
+
+4. APIM                Opens the token. Fetches ADFS's PUBLIC KEY (once, then caches).
+                       Checks: signature genuine? not expired? audience = our API?
+                       Checks: has this caller exceeded 100 calls/min?
+                       -> any failure: reply 401 or 429. FastAPI is NEVER contacted.
+
+5. APIM   -> FastAPI   Forwards the call to the real backend.
+6. FastAPI             Runs model.predict(). Returns 465276.13.
+7. APIM   -> App       Passes the answer back, stripping internal headers.
+```
+
+**Step 4 is the whole value.** A bad caller is stopped by Azure's infrastructure
+before it ever touches your Python. Your code never sees the attack.
+
+### How the signature check works (no magic involved)
+This is the one piece of cryptography worth understanding:
+
+1. ADFS signs each token with a **private key** only ADFS possesses.
+2. ADFS publishes the matching **public key** at a public URL.
+3. APIM downloads that public key and uses it to verify the signature.
+4. The public key can only **check** signatures, never **create** them.
+
+So an attacker can download the public key too — and it does them no good. They
+still cannot forge a token, because they don't have the private key. And if they
+edit even one character of a real token, the signature stops matching.
+
+That published URL is exactly the `<openid-config url="..."/>` line in the
+policy. You are telling APIM: *"here is where to find the passport office's
+official stamp, so you can recognise a real passport."*
+
+---
+
 ## Why two layers? Can't FastAPI just check the password itself?
 
 It could — but you would rewrite that logic in every service you ever build, and
@@ -237,6 +402,6 @@ az apim delete --name house-price-apim --resource-group my-ml-rg --yes
   one — and `/health` needs *no* rules at all.
 
 ## Next up (Part 7)
-**Docker** — we package this FastAPI app into a container image so it runs the
-same on your laptop, in Kubernetes, and in Azure. That container is what APIM
-will point at as its backend.
+**Azure ML Jobs** — we hand this pipeline to Azure to run on its own machines,
+and watch it draw itself as a clickable flowchart in the Azure ML Studio.
+Docker follows in Part 8.

@@ -1,0 +1,64 @@
+# =============================================================================
+# .dockerignore -- what NOT to copy into the image
+# =============================================================================
+# When you run `docker build .`, Docker first sends the whole folder to its
+# engine. This file excludes things from that copy.
+#
+# WHY IT MATTERS (three real reasons, not just tidiness):
+#
+#  1. SPEED. Without this, the 500MB .venv folder gets sent on every build.
+#  2. CORRECTNESS. .venv holds Windows executables. Copying them into a Linux
+#     container gives you a broken environment that fails in confusing ways.
+#     The image must install its OWN Linux libraries -- which the Dockerfile does.
+#  3. SECURITY. credentials.yml and .env hold secrets. Anyone who pulls your
+#     image can read every file inside it. Secrets must be injected at RUN time
+#     as environment variables, never baked in at BUILD time.
+#
+# Copy this file into house-price/ alongside the Dockerfile.
+# =============================================================================
+
+# --- Virtual environments (reason 1 and 2 above) ---
+.venv/
+venv/
+env/
+
+# --- Python leftovers ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- SECRETS: never let these into an image ---
+conf/local/
+.env
+*.pem
+*.key
+credentials.yml
+
+# --- Data and trained models ---
+# WHY EXCLUDE THE MODEL? Two schools of thought:
+#   (a) Bake the model in  -> image is self-contained, but you rebuild the whole
+#       image for every retrain, and images get large.
+#   (b) Load at startup from Blob Storage -> image stays small, model updates
+#       without a rebuild. This is what most teams do, and where we are heading.
+# We exclude it here and let POST /pipeline/run create one, or load from Azure.
+data/
+!data/01_raw/.gitkeep
+
+# --- Development-only files ---
+.git/
+.gitignore
+notebooks/
+*.ipynb
+.viz/
+.telemetry
+README.md
+TUTORIAL.md
+
+# --- Editor and OS noise ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

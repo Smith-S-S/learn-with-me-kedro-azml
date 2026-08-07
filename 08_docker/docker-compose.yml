@@ -1,0 +1,92 @@
+# =============================================================================
+# docker-compose.yml -- run the whole thing with ONE command
+# =============================================================================
+# WHAT COMPOSE IS FOR
+#   A `docker run` command for a real app gets long fast: ports, volumes,
+#   environment variables, restart rules... and you must retype it perfectly
+#   every time.
+#
+#   Compose moves all of that into this file. Then:
+#       docker compose up        (start everything)
+#       docker compose down      (stop everything)
+#
+#   It also runs SEVERAL containers together. A real app is usually an API plus
+#   a database plus a cache. Compose starts them as one unit, on one private
+#   network where they can find each other by name.
+#
+# COMPOSE vs KUBERNETES -- when to use which:
+#   Compose     = your laptop, one machine. Simple. For development.
+#   Kubernetes  = many machines, auto-restart, auto-scale. For production.
+#                 That is Part 4, and it is where this really ships.
+#
+# Copy this file into house-price/ and run:  docker compose up --build
+# =============================================================================
+
+services:
+
+  # "api" is a name WE choose. Other containers on this network can reach this
+  # one at the address http://api:8000 -- Docker provides that name resolution.
+  api:
+    build:
+      context: .            # the folder to build from (where the code is)
+      dockerfile: Dockerfile
+
+    image: house-price-api:1.0
+
+    # PORTS: "outside:inside"
+    #   8000 on your laptop  ->  8000 inside the container.
+    #   To use a different local port because 8000 is busy, write "8080:8000"
+    #   and visit localhost:8080. The right-hand number must match the port in
+    #   the Dockerfile's CMD.
+    ports:
+      - "8000:8000"
+
+    # ENVIRONMENT: settings passed in at RUN time, not baked into the image.
+    # This is HOW SECRETS SHOULD TRAVEL. The image stays clean and shareable;
+    # the secret lives on the machine running it.
+    environment:
+      - LOG_LEVEL=info
+      # Real secrets come from a .env file that is NOT committed to git:
+      # - AZURE_STORAGE_CONNECTION_STRING=${AZURE_STORAGE_CONNECTION_STRING}
+
+    # VOLUMES: a folder shared between your laptop and the container.
+    #
+    # WHY: everything inside a container is DELETED when it stops. That is the
+    # point of containers -- they are disposable. But we want trained models to
+    # survive a restart. A volume is the escape hatch for data that must persist.
+    #
+    # "./data:/app/data" means: the data folder here on your laptop IS the
+    # /app/data folder inside the container. Write a model there and it stays.
+    volumes:
+      - ./data:/app/data
+
+    # RESTART POLICY: if the app crashes, start it again automatically.
+    # "unless-stopped" = always restart, EXCEPT when you deliberately stopped it.
+    restart: unless-stopped
+
+    # Compose can run the same health check as the Dockerfile.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# =============================================================================
+# WHAT A SECOND SERVICE WOULD LOOK LIKE
+# -----------------------------------------------------------------------------
+# We do not need a database yet, but this shows why Compose exists. Uncomment
+# and you get a Postgres running alongside the API, reachable from the API at
+# hostname "db" -- no IP addresses, no manual networking.
+#
+#  db:
+#    image: postgres:16
+#    environment:
+#      - POSTGRES_PASSWORD=${DB_PASSWORD}
+#      - POSTGRES_DB=houseprice
+#    volumes:
+#      - pgdata:/var/lib/postgresql/data
+#
+# volumes:
+#   pgdata:
+# =============================================================================

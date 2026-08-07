@@ -1,0 +1,128 @@
+# =============================================================================
+# PIPELINE JOB -- this is the one that draws the GRAPH in the Azure ML UI
+# =============================================================================
+# THE KEY IDEA
+#   A command job is one box. A PIPELINE job is several steps wired together,
+#   and Azure ML draws them as a flowchart you can click on.
+#
+#   The graph is NOT decoration. Azure builds it by reading which step's OUTPUT
+#   feeds which step's INPUT -- exactly like Kedro does with its catalog names.
+#   You never draw the picture. You describe the plumbing, and the picture is
+#   generated from it.
+#
+#   This is what you asked to see: run a job, get the pipeline UI.
+#
+# WHAT YOU GET IN THE STUDIO
+#   * a clickable box per step
+#   * arrows showing what feeds what
+#   * green / red per step, so a failure points at ONE step, not the whole run
+#   * per-step logs, duration, and outputs
+#   * completed steps are CACHED and reused on the next run (see below)
+#
+# HOW TO RUN IT
+#   cd house-price
+#   az ml job create --file ../07_azureml_jobs/pipeline-job.yml ^
+#      --resource-group my-ml-rg --workspace-name my-ml-workspace
+# =============================================================================
+
+$schema: https://azuremlschemas.azureedge.net/latest/pipelineJob.schema.json
+
+# "pipeline" is what tells Azure ML to draw the graph instead of a single box.
+type: pipeline
+
+display_name: house-price-pipeline
+description: The Kedro house-price pipeline, split into visible steps.
+experiment_name: house-price-training
+
+# settings that apply to every step unless a step overrides them
+settings:
+  default_compute: azureml:cpu-cluster
+
+# ---------------------------------------------------------------------------
+# jobs: the steps. Each one becomes a BOX in the graph.
+# ---------------------------------------------------------------------------
+jobs:
+
+  # ---- BOX 1: build the dataset -------------------------------------------
+  prepare_data:
+    type: command
+    display_name: "1. Create house data"
+    code: ../house-price
+    command: >-
+      pip install -r requirements.txt &&
+      python -m kedro run --nodes create_house_data_node &&
+      cp data/01_raw/house_data.csv ${{outputs.house_data}}
+    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+
+    # OUTPUTS are how a step hands work to the next step.
+    # ${{outputs.house_data}} is a FOLDER PATH Azure gives us at run time. We
+    # copy our result there, and Azure stores it and passes it along.
+    outputs:
+      house_data:
+        type: uri_folder
+
+  # ---- BOX 2: train the model ---------------------------------------------
+  train_model:
+    type: command
+    display_name: "2. Train model"
+    code: ../house-price
+    command: >-
+      pip install -r requirements.txt &&
+      cp ${{inputs.house_data}}/house_data.csv data/01_raw/house_data.csv &&
+      python -m kedro run --nodes split_data_node,train_model_node &&
+      cp -r data/06_models ${{outputs.model}}
+    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+
+    # THIS LINE IS WHAT DRAWS THE ARROW.
+    # We say "my input is box 1's output". Azure reads that, works out that
+    # prepare_data must finish first, and draws prepare_data -> train_model.
+    # Change nothing else: the graph comes from this one reference.
+    inputs:
+      house_data: ${{parent.jobs.prepare_data.outputs.house_data}}
+
+    outputs:
+      model:
+        type: uri_folder
+
+  # ---- BOX 3: score the model ---------------------------------------------
+  evaluate_model:
+    type: command
+    display_name: "3. Evaluate model"
+    code: ../house-price
+    command: >-
+      pip install -r requirements.txt &&
+      cp -r ${{inputs.model}}/* data/06_models/ &&
+      python -m kedro run --nodes evaluate_model_node &&
+      cp data/08_reporting/metrics.json ${{outputs.metrics}}
+    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+
+    inputs:
+      model: ${{parent.jobs.train_model.outputs.model}}
+
+    outputs:
+      metrics:
+        type: uri_folder
+
+# =============================================================================
+# THE RESULTING GRAPH IN THE STUDIO
+#
+#     [1. Create house data] --> [2. Train model] --> [3. Evaluate model]
+#
+# WHY SPLIT IT UP AT ALL, when command-job.yml does the same work in one box?
+#
+#   1. YOU SEE WHERE IT BROKE. One red box instead of one red job and 2000
+#      lines of log to read.
+#   2. CACHING. Re-run after changing only the evaluation step and Azure REUSES
+#      steps 1 and 2 instead of redoing them. On real data that saves hours and
+#      real money.
+#   3. DIFFERENT MACHINES PER STEP. Data prep on a cheap CPU box, training on an
+#      expensive GPU box. Add `compute:` to any individual step to do this.
+#   4. PARALLELISM. Steps that do not depend on each other run at the SAME TIME.
+#      Azure works that out from the inputs/outputs, automatically.
+#
+# NOTE ON THE cp COMMANDS
+#   The copying above is glue between Kedro's local file layout and Azure's
+#   input/output folders. It is a bit clumsy on purpose, so you can SEE the
+#   handover happening. The kedro-azureml plugin (see the README) removes all
+#   of it and generates these steps straight from your Kedro pipeline.
+# =============================================================================

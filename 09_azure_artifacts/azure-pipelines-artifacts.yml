@@ -1,0 +1,131 @@
+# =============================================================================
+# Azure DevOps pipeline: build the House Price API using the PRIVATE feed
+# =============================================================================
+# WHAT A PIPELINE IS
+#   A recipe Azure DevOps runs FOR you, on ITS machine, whenever code changes.
+#   You are not running these commands -- a build agent is. That is exactly why
+#   authentication has to be handled explicitly: the agent is a fresh, empty
+#   machine that has never logged in to anything.
+#
+# WHAT THIS ONE DOES
+#   1. gets a clean machine
+#   2. installs Python
+#   3. authenticates to your private Azure Artifacts feed
+#   4. installs the libraries FROM THAT FEED (never the public internet)
+#   5. builds the Docker image and pushes it to ACR
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main            # run automatically when main changes
+
+pool:
+  vmImage: ubuntu-latest    # a fresh Linux machine, thrown away after the run
+
+variables:
+  pythonVersion: '3.12'
+  # Replace these with your own names:
+  feedName: 'my-python-feed'
+  acrName: 'mycompanyacr'
+  imageName: 'house-price-api'
+
+steps:
+
+  # ---------------------------------------------------------------------------
+  # STEP 1: install Python
+  # ---------------------------------------------------------------------------
+  - task: UsePythonVersion@0
+    displayName: 'Use Python $(pythonVersion)'
+    inputs:
+      versionSpec: '$(pythonVersion)'
+
+  # ---------------------------------------------------------------------------
+  # STEP 2: authenticate to the private feed
+  # ---------------------------------------------------------------------------
+  # THIS IS THE IMPORTANT STEP, and the one people skip.
+  #
+  # The build agent is a brand new machine. It has no idea who you are and no
+  # permission to read your private feed. Without this step, the next step fails
+  # with "401 Unauthorized" and the error does not obviously point here.
+  #
+  # PipAuthenticate quietly injects a short-lived token into the agent's pip
+  # config. Notice there is NO PASSWORD ANYWHERE IN THIS FILE -- Azure DevOps
+  # already knows who the pipeline is and issues the credential itself.
+  # A password written in a YAML file would be committed to git forever.
+  - task: PipAuthenticate@1
+    displayName: 'Authenticate to Azure Artifacts'
+    inputs:
+      artifactFeeds: '$(feedName)'
+      # onlyAddExtraIndex: false  <- leave false. Setting it true would add the
+      # feed as an EXTRA index alongside public PyPI, re-opening the dependency
+      # confusion hole described in pip.conf. We want the feed to be the ONLY
+      # source.
+      onlyAddExtraIndex: false
+
+  # ---------------------------------------------------------------------------
+  # STEP 3: install the libraries
+  # ---------------------------------------------------------------------------
+  # Ordinary pip install. Because step 2 ran, pip now points at the private feed
+  # and carries a valid token. Nothing here mentions the feed at all -- that is
+  # the sign it is set up correctly.
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r house-price/requirements.txt
+    displayName: 'Install dependencies from private feed'
+
+  # ---------------------------------------------------------------------------
+  # STEP 4: prove the API actually works before shipping it
+  # ---------------------------------------------------------------------------
+  # A build that only checks "did it install" will happily ship a broken API.
+  # Importing the app catches syntax errors and missing dependencies now, on the
+  # build agent, instead of at 3am in production.
+  - script: |
+      cd house-price
+      python -c "import sys; sys.path.insert(0, 'src'); from house_price.main import app; print('FastAPI app imports OK')"
+    displayName: 'Smoke test: the app imports'
+
+  # ---------------------------------------------------------------------------
+  # STEP 5: build and push the container image to ACR
+  # ---------------------------------------------------------------------------
+  # buildAndPush does both in one step and handles the ACR login for you, using
+  # a "service connection" -- a stored, managed identity link between Azure
+  # DevOps and your Azure subscription. Again: no passwords in this file.
+  - task: Docker@2
+    displayName: 'Build and push image to ACR'
+    inputs:
+      containerRegistry: 'my-acr-service-connection'
+      repository: '$(imageName)'
+      command: 'buildAndPush'
+      Dockerfile: 'house-price/Dockerfile'
+      buildContext: 'house-price'
+      tags: |
+        $(Build.BuildId)
+        latest
+      # WHY TWO TAGS:
+      #   $(Build.BuildId) is unique and permanent -- it lets you roll back to
+      #     an exact earlier build, and tells you precisely what is deployed.
+      #   latest is convenient but AMBIGUOUS -- it means something different
+      #     every day. Never deploy production from "latest".
+
+# =============================================================================
+# BUILDING THE IMAGE WITH A PRIVATE FEED
+# -----------------------------------------------------------------------------
+# One catch worth knowing: the Docker build runs in its own sealed environment,
+# so it does NOT inherit the agent's pip authentication from step 2.
+#
+# The clean way is a build-time secret that never lands in the image:
+#
+#   # in the Dockerfile
+#   RUN --mount=type=secret,id=pipconf,target=/etc/pip.conf \
+#       pip install --no-cache-dir -r requirements.txt
+#
+#   # when building
+#   docker build --secret id=pipconf,src=pip.conf -t house-price-api:1.0 .
+#
+# WHY NOT just COPY pip.conf into the image?
+#   Because the token inside it would be permanently baked into an image layer.
+#   Anyone who pulls the image could extract it -- deleting the file in a later
+#   layer does NOT remove it, the earlier layer still holds it. A --mount secret
+#   is present only during that one command and is never written to a layer.
+# =============================================================================

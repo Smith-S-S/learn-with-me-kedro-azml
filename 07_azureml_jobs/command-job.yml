@@ -1,0 +1,76 @@
+# =============================================================================
+# COMMAND JOB -- the simplest kind of Azure ML job
+# =============================================================================
+# WHAT A "JOB" IS
+#   A job is one piece of work you hand to Azure: "run this command, on that
+#   computer, using these files." Azure finds a machine, copies your code onto
+#   it, runs the command, saves the output and logs, then switches the machine
+#   off so you stop paying.
+#
+#   You are NOT running this on your laptop. You are describing work and posting
+#   it to Azure, which does it for you.
+#
+# WHAT A "COMMAND JOB" IS
+#   The simplest type: ONE command, ONE box in the UI. Perfect first step.
+#   It does NOT draw a pipeline graph -- there is only one step to draw.
+#   For the visual graph you want pipeline-job.yml (the next file).
+#
+# HOW TO RUN IT
+#   cd house-price
+#   az ml job create --file ../07_azureml_jobs/command-job.yml ^
+#      --resource-group my-ml-rg --workspace-name my-ml-workspace
+# =============================================================================
+
+# $schema gives your editor autocomplete and catches typos before you upload.
+# Not required, but it turns a 10-minute cloud error into an instant red squiggle.
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+
+# display_name is what you will actually see in the Jobs list in the Studio UI.
+# Make it descriptive -- after 40 runs, "job_1" tells you nothing.
+display_name: house-price-kedro-run
+description: Runs the whole Kedro house-price pipeline as a single Azure ML job.
+
+# EXPERIMENT = a folder for related runs. Every run of this job lands in the
+# same experiment so you can compare them side by side in the UI.
+experiment_name: house-price-training
+
+# ---------------------------------------------------------------------------
+# code: which folder to upload
+# ---------------------------------------------------------------------------
+# Azure zips this folder and copies it to the machine that runs the job.
+# "." means "the folder I ran the command from" -- so run this from house-price/.
+# NOTE: this respects .amlignore (or .gitignore) -- keep .venv and data out, or
+# you will upload hundreds of megabytes on every single run.
+code: .
+
+# ---------------------------------------------------------------------------
+# command: what to actually run
+# ---------------------------------------------------------------------------
+# Exactly what you would type in a terminal. This is the same command you have
+# been running locally all along -- that is the point. Nothing about Kedro
+# changes just because it now runs in the cloud.
+command: >-
+  pip install -r requirements.txt &&
+  python -m kedro run
+
+# ---------------------------------------------------------------------------
+# environment: which pre-built machine image to use
+# ---------------------------------------------------------------------------
+# An "environment" is a container image plus installed libraries. Rather than
+# build our own, we borrow one Microsoft maintains, from the azureml registry.
+#
+# Reading the address:
+#   azureml://registries/azureml/  = Microsoft's public registry
+#   environments/sklearn-1.5-ubuntu20.04-py38-cpu = the specific image
+#   labels/latest                  = newest version of it
+#
+# In Part 8 (Docker) we build our OWN image instead. This is the shortcut for now.
+environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+
+# ---------------------------------------------------------------------------
+# compute: WHICH machine runs it
+# ---------------------------------------------------------------------------
+# The name of a compute cluster you created earlier (see the README).
+# If the cluster is scaled to zero, Azure starts a machine now -- which is why
+# the first run takes a few extra minutes. That is normal, not a hang.
+compute: azureml:cpu-cluster

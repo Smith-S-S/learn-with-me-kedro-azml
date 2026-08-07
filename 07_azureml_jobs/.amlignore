@@ -1,0 +1,45 @@
+# =============================================================================
+# .amlignore -- what NOT to upload to Azure when you submit a job
+# =============================================================================
+# Every `az ml job create` ZIPS UP your code folder and uploads it. Without this
+# file you would send the 500MB .venv folder to Azure on EVERY SINGLE RUN.
+#
+# Same idea as .dockerignore in Part 8, and it matters for the same reasons:
+#   SPEED    -- uploads take seconds instead of minutes
+#   MONEY    -- you pay for storage of every snapshot
+#   SECURITY -- conf/local/credentials.yml must never leave your machine
+#
+# If .amlignore is absent, Azure ML falls back to .gitignore.
+# Copy this file into house-price/ before submitting a job.
+# =============================================================================
+
+# Virtual environments -- huge, and full of Windows binaries that are useless
+# on the Linux machine that will run the job.
+.venv/
+venv/
+
+# Python leftovers
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# SECRETS -- never upload
+conf/local/
+.env
+*.pem
+*.key
+credentials.yml
+
+# Local data and models. The job regenerates these, and Azure stores its own
+# copies as job outputs.
+data/
+!data/01_raw/.gitkeep
+
+# Local noise
+.git/
+notebooks/
+.ipynb_checkpoints/
+.viz/
+.telemetry
+drift_report.html

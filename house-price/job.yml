@@ -1,0 +1,7 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+command: python -m kedro run
+code: .
+environment: azureml:kedro-house-price-env@latest
+compute: azureml:shared-training-cluster
+display_name: house-price-terminal-run
+experiment_name: house-price-experiment
