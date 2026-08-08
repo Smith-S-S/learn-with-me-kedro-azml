@@ -38,10 +38,23 @@ experiment_name: house-price-training
 # code: which folder to upload
 # ---------------------------------------------------------------------------
 # Azure zips this folder and copies it to the machine that runs the job.
-# "." means "the folder I ran the command from" -- so run this from house-price/.
-# NOTE: this respects .amlignore (or .gitignore) -- keep .venv and data out, or
-# you will upload hundreds of megabytes on every single run.
-code: .
+#
+# ⚠️ READ THIS CAREFULLY -- it is the #1 cause of a failed first job.
+# This path is resolved RELATIVE TO THIS YAML FILE, *not* relative to the
+# folder your terminal is sitting in.
+#
+# This file lives in 07_azureml_jobs/, so:
+#     code: .                -> uploads 07_azureml_jobs/  (only .md and .yml!)
+#     code: ../house-price   -> uploads house-price/      (what we actually want)
+#
+# Getting this wrong gives you:
+#     ERROR: Could not open requirements file: 'requirements.txt'
+# ...because the uploaded snapshot genuinely has no requirements.txt in it.
+# To check what was uploaded: Studio -> your job -> the "Code" tab.
+#
+# NOTE: this respects .amlignore (or .gitignore if there is no .amlignore) --
+# keep .venv and data out, or you upload hundreds of megabytes on every run.
+code: ../house-price
 
 # ---------------------------------------------------------------------------
 # command: what to actually run

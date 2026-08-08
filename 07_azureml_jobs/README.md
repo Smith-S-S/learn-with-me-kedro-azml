@@ -227,12 +227,12 @@ every command.
 
 ### 5. Create a compute cluster — **read the `--min-instances 0` note**
 ```bash
-az ml compute create ^
-  --name cpu-cluster ^
-  --type amlcompute ^
-  --size Standard_DS3_v2 ^
-  --min-instances 0 ^
-  --max-instances 2 ^
+az ml compute create \
+  --name cpu-cluster \
+  --type amlcompute \
+  --size Standard_DS3_v2 \
+  --min-instances 0 \
+  --max-instances 2 \
   --idle-time-before-scale-down 120
 ```
 
@@ -299,16 +299,16 @@ Open <https://ml.azure.com> → **Jobs** → **house-price-training** → your r
 You'll see this, drawn for you:
 
 ```
-   ┌──────────────────────┐     ┌──────────────────┐     ┌──────────────────────┐
-   │ 1. Create house data │ ──► │ 2. Train model   │ ──► │ 3. Evaluate model    │
-   └──────────────────────┘     └──────────────────┘     └──────────────────────┘
+   ┌──────────────────────┐     ┌────────────────────────┐
+   │ 1. Create house data │ ──► │ 2. Train and evaluate  │
+   └──────────────────────┘     └────────────────────────┘
 ```
 
 ### Where the arrows come from
 **You never draw the picture.** You wrote this in the YAML:
 
 ```yaml
-train_model:
+train_and_evaluate:
   inputs:
     house_data: ${{parent.jobs.prepare_data.outputs.house_data}}
 ```
@@ -319,6 +319,62 @@ That says *"my input is step 1's output."* Azure reads it, works out that
 This is the same idea as Kedro: in `pipeline.py` you say a node's input is
 another node's output, and Kedro figures out the order. Azure ML does exactly
 the same thing, and then draws it.
+
+### ⚠️ Why two boxes and not three — where you're *allowed* to cut
+
+This is the part that bites everyone the first time, so it's worth understanding
+rather than copying.
+
+**Each step runs as a separate process, on a separate machine.** Nothing stays
+in memory between them. So anything crossing a step boundary has to be a dataset
+Kedro actually **writes to disk** — meaning something declared in
+`conf/base/catalog.yml`.
+
+Our catalog declares exactly three:
+
+| Declared in catalog (survives a step) | Only in memory (dies with the process) |
+|---|---|
+| `house_data` (CSV) | `welcome_message` |
+| `regressor` (pickle) | `X_train`, `X_test` |
+| `metrics` (JSON) | `y_train`, `y_test` |
+
+So the "obvious" one-node-per-box split **fails**, and here are the exact errors:
+
+```bash
+kedro run --nodes create_house_data_node
+# ValueError: Pipeline input(s) {'welcome_message'} not found in the DataCatalog
+#   -> say_hi_at_start_node produces it, in memory. Include that node too.
+
+kedro run --nodes evaluate_model_node
+# ValueError: Pipeline input(s) {'X_test', 'y_test'} not found in the DataCatalog
+#   -> split_data_node produces them, in memory. Keep split/train/evaluate together.
+```
+
+> **The rule: group nodes so every step starts and ends on a catalog entry.**
+>
+> Test any grouping locally *before* submitting it — it takes seconds instead of
+> minutes, and the error message is identical:
+> ```bash
+> python -m kedro run --nodes say_hi_at_start_node,create_house_data_node
+> ```
+
+#### Want three boxes? Persist the intermediate data.
+Nothing stops you — you just have to make `X_test`/`y_test` real files. Add to
+`conf/base/catalog.yml`:
+
+```yaml
+X_test:
+  type: pandas.CSVDataset
+  filepath: data/05_model_input/X_test.csv
+
+y_test:
+  type: pandas.CSVDataset
+  filepath: data/05_model_input/y_test.csv
+```
+
+Now `evaluate_model_node` can be its own step. **This is the real lesson:** how
+finely you can split an Azure ML pipeline is decided by your Kedro catalog, not
+by the YAML.
 
 ### What you can click on
 
@@ -390,12 +446,27 @@ Kedro node, with all the wiring derived from your catalog:
 pip install kedro-azureml        # version 1.0.0, needs Python 3.9-3.12
 
 cd house-price
+
 kedro azureml init ^
   --azure-subscription-id <sub-id> ^
   --resource-group my-ml-rg ^
   --workspace-name my-ml-workspace ^
   --experiment-name house-price-training ^
   --cluster-name cpu-cluster
+
+OR
+
+kedro azureml init \
+  vvv-xx-x-xx-63264xx2e6d7de \
+  rg-azureml-demo \
+  mlw-house-price \
+  house-price-training \
+  ci-house-price \
+  --azureml-environment azureml://registries/azureml/environments/sklearn-1.5/labels/latest \
+  --use-pipeline-data-passing 
+  
+#  --use-pipeline-data-passing -> This is say the pipeline to handle the data passing for us, and it will do the storing and all by itself, just like the original kedro run
+
 
 kedro azureml run
 ```
@@ -420,6 +491,10 @@ the thing that actually runs; the plugin is a convenience on top.
 | `AuthorizationFailed` | Wrong subscription: `az account set --subscription "..."` |
 | Step fails with `ModuleNotFoundError` | The environment lacks a library. Add it to `requirements.txt` (the command does `pip install -r requirements.txt`). |
 | Steps run but no graph appears | You submitted `command-job.yml`. Only `type: pipeline` draws a graph. |
+| **`Could not open requirements file: 'requirements.txt'`** | **The `code:` path is wrong.** It is resolved relative to **the YAML file's folder**, not your terminal. From `07_azureml_jobs/`, use `code: ../house-price` — `code: .` would upload the `.md` files instead. Confirm via Studio → your job → **Code** tab. |
+| **`ValueError: Pipeline input(s) {...} not found in the DataCatalog`** | **You cut the pipeline at a MemoryDataset.** That name is produced by a node you left out of this step. Group nodes so every step starts and ends on a catalog entry — see "Why two boxes and not three" above. |
+| **`cp: cannot create ... No such file or directory`** | The `data/` folders don't exist on the machine — `data/` is excluded from the upload by `.amlignore` (or `.gitignore`'s `data/**`). Add `mkdir -p data/01_raw data/06_models data/08_reporting` before the `cp`. |
+| Pipeline fails with **"Failed nodes: /prepare_data"** | That's just the parent telling you *which child* failed. Open the child job in the Studio for the real error — the parent never shows it. |
 | `path not found` on the `cp` lines | A Kedro node wrote somewhere unexpected. Check the step's log to see what was actually produced. |
 
 ---

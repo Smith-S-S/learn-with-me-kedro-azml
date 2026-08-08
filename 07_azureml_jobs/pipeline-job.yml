@@ -38,21 +38,50 @@ experiment_name: house-price-training
 settings:
   default_compute: azureml:cpu-cluster
 
-# ---------------------------------------------------------------------------
-# jobs: the steps. Each one becomes a BOX in the graph.
-# ---------------------------------------------------------------------------
+# =============================================================================
+# ⚠️ WHERE YOU CAN AND CANNOT CUT A KEDRO PIPELINE
+# -----------------------------------------------------------------------------
+# Each step below runs as a SEPARATE PROCESS, on a SEPARATE MACHINE. Nothing
+# stays in memory between them.
+#
+# So anything that crosses a step boundary MUST be a dataset that Kedro actually
+# writes to disk -- in other words, something declared in conf/base/catalog.yml.
+#
+# Our catalog declares exactly three:
+#       house_data   (CSV)     regressor  (pickle)     metrics  (JSON)
+#
+# Everything else -- welcome_message, X_train, X_test, y_train, y_test -- is a
+# MemoryDataset. It exists only inside one `kedro run` and vanishes when that
+# process ends.
+#
+# THIS IS WHY THERE ARE 2 BOXES HERE AND NOT 3.
+# An obvious-looking 3-way split fails, and here is the exact error each time:
+#
+#   kedro run --nodes create_house_data_node
+#     -> ValueError: Pipeline input(s) {'welcome_message'} not found in the
+#        DataCatalog        (it is produced by say_hi_at_start_node, in memory)
+#
+#   kedro run --nodes evaluate_model_node
+#     -> ValueError: Pipeline input(s) {'X_test', 'y_test'} not found in the
+#        DataCatalog        (produced by split_data_node, in memory)
+#
+# THE RULE: group nodes so that every step starts and ends on a CATALOG entry.
+# (Want 3 boxes? Add X_test and y_test to catalog.yml -- see the README.)
+# =============================================================================
 jobs:
 
   # ---- BOX 1: build the dataset -------------------------------------------
+  # say_hi_at_start_node MUST be included: create_house_data takes its
+  # 'welcome_message' output as an input.
   prepare_data:
     type: command
     display_name: "1. Create house data"
     code: ../house-price
     command: >-
       pip install -r requirements.txt &&
-      python -m kedro run --nodes create_house_data_node &&
-      cp data/01_raw/house_data.csv ${{outputs.house_data}}
-    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+      python -m kedro run --nodes say_hi_at_start_node,create_house_data_node &&
+      cp data/01_raw/house_data.csv ${{outputs.house_data}}/house_data.csv
+    environment: azureml://registries/azureml/environments/sklearn-1.5/labels/latest
 
     # OUTPUTS are how a step hands work to the next step.
     # ${{outputs.house_data}} is a FOLDER PATH Azure gives us at run time. We
@@ -61,21 +90,31 @@ jobs:
       house_data:
         type: uri_folder
 
-  # ---- BOX 2: train the model ---------------------------------------------
-  train_model:
+  # ---- BOX 2: train and score ---------------------------------------------
+  # split -> train -> evaluate stay TOGETHER because X_test/y_test only live in
+  # memory between them. say_hi_at_end_node rides along; it just needs metrics.
+  train_and_evaluate:
     type: command
-    display_name: "2. Train model"
+    display_name: "2. Train and evaluate"
     code: ../house-price
     command: >-
       pip install -r requirements.txt &&
+      mkdir -p data/01_raw data/06_models data/08_reporting &&
       cp ${{inputs.house_data}}/house_data.csv data/01_raw/house_data.csv &&
-      python -m kedro run --nodes split_data_node,train_model_node &&
-      cp -r data/06_models ${{outputs.model}}
-    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+      python -m kedro run --nodes split_data_node,train_model_node,evaluate_model_node,say_hi_at_end_node &&
+      cp -r data/06_models/. ${{outputs.model}}/ &&
+      cp data/08_reporting/metrics.json ${{outputs.metrics}}/metrics.json
+    environment: azureml://registries/azureml/environments/sklearn-1.5/labels/latest
+
+    # WHY `mkdir -p` ABOVE:
+    # data/ is excluded from the upload (by .amlignore, or by .gitignore's
+    # `data/**` rule if there is no .amlignore). So those folders do NOT exist
+    # on the machine, and `cp` into a missing folder fails with
+    # "No such file or directory". Create them first.
 
     # THIS LINE IS WHAT DRAWS THE ARROW.
     # We say "my input is box 1's output". Azure reads that, works out that
-    # prepare_data must finish first, and draws prepare_data -> train_model.
+    # prepare_data must finish first, and draws prepare_data -> train_and_evaluate.
     # Change nothing else: the graph comes from this one reference.
     inputs:
       house_data: ${{parent.jobs.prepare_data.outputs.house_data}}
@@ -83,30 +122,13 @@ jobs:
     outputs:
       model:
         type: uri_folder
-
-  # ---- BOX 3: score the model ---------------------------------------------
-  evaluate_model:
-    type: command
-    display_name: "3. Evaluate model"
-    code: ../house-price
-    command: >-
-      pip install -r requirements.txt &&
-      cp -r ${{inputs.model}}/* data/06_models/ &&
-      python -m kedro run --nodes evaluate_model_node &&
-      cp data/08_reporting/metrics.json ${{outputs.metrics}}
-    environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
-
-    inputs:
-      model: ${{parent.jobs.train_model.outputs.model}}
-
-    outputs:
       metrics:
         type: uri_folder
 
 # =============================================================================
 # THE RESULTING GRAPH IN THE STUDIO
 #
-#     [1. Create house data] --> [2. Train model] --> [3. Evaluate model]
+#     [1. Create house data] --> [2. Train and evaluate]
 #
 # WHY SPLIT IT UP AT ALL, when command-job.yml does the same work in one box?
 #
