@@ -65,7 +65,7 @@ command: >-
 #   labels/latest                  = newest version of it
 #
 # In Part 8 (Docker) we build our OWN image instead. This is the shortcut for now.
-environment: azureml://registries/azureml/environments/sklearn-1.5-ubuntu20.04-py38-cpu/labels/latest
+environment: azureml://registries/azureml/environments/sklearn-1.5/labels/latest
 
 # ---------------------------------------------------------------------------
 # compute: WHICH machine runs it

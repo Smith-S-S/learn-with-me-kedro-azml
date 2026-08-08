@@ -101,6 +101,138 @@ kedro registry list                # see available pipelines
 | hard to move to the cloud | change the catalog → runs on Azure |
 
 ---
+
+## Seeing the pipeline: Kedro Viz
+
+Kedro can **draw** your pipeline — the same kind of graph Azure ML shows in
+Part 7, but locally and instantly.
+
+### The command
+
+```bash
+cd house-price                       # ← MUST be the project root
+python -m kedro viz run
+```
+
+Your browser opens at **<http://127.0.0.1:4141>** with the graph.
+
+Three things about that command:
+
+1. **`kedro viz run`**, not `kedro viz` on its own. In kedro-viz 12.x, `run` is a
+   subcommand (alongside `build` and `deploy`).
+2. **`python -m kedro`** rather than plain `kedro` — the same habit as everywhere
+   else in this tutorial. If `kedro` isn't on your PATH you'd get
+   `command not found` and think Viz was broken when it's just the launcher.
+3. **Run it from the project root** — the folder containing `pyproject.toml`.
+   From anywhere else Kedro can't find the project and gives up.
+
+### ⏳ Give it 10–30 seconds
+
+`Starting Kedro Viz ...` appears immediately, but the server is **not ready
+yet** — it still has to import your project and build the graph. On this project
+the browser only answers after roughly 10–30 seconds.
+
+**This is the single most common reason people think it's broken.** They see
+`Starting Kedro Viz ...`, hit the URL right away, get "can't reach this page",
+and Ctrl-C out before it ever finished starting. Wait for this line:
+
+```
+Kedro Viz started successfully.
+Kedro Viz is running at http://127.0.0.1:4141/
+```
+
+**That** line means it's ready. Not the "Starting" one.
+
+### What you should see
+
+Six boxes, wired in the order the catalog implies:
+
+```
+say_hi_at_start → create_house_data → split_data → train_model → evaluate_model → say_hi_at_end
+```
+
+Top-left there's a **pipeline dropdown** with `__default__` and
+`house_price_pipeline`. Both contain the same 6 nodes here, because
+`pipeline_registry.py` sums them into `__default__`.
+
+> ### 😱 The scary output that is NOT a bug
+> When Viz starts, your `pipeline_registry.py` debug `print` fires and shows:
+>
+> ```
+> {'__default__': Pipeline([]), 'house_price_pipeline': Pipeline([...6 nodes...])}
+> ```
+>
+> `__default__` looks **empty** — but it isn't. That `print` sits *before* the
+> line that fills it:
+>
+> ```python
+> pipelines = find_pipelines()
+> print(f"...{pipelines}...")                      # ← prints the BEFORE state
+> pipelines["__default__"] = sum(pipelines.values())   # ← filled in HERE
+> ```
+>
+> Verified on this project: after registration `__default__` holds all 6 nodes,
+> and the Viz API serves them. You're seeing a snapshot taken one line too early.
+> Move the `print` below the assignment if it bothers you.
+
+### Useful flags
+
+```bash
+python -m kedro viz run --autoreload        # redraw automatically when you edit nodes.py
+python -m kedro viz run --port 4142         # if 4141 is taken
+python -m kedro viz run --no-browser        # don't auto-open a browser
+python -m kedro viz run --include-hooks     # run your hooks too (see below)
+```
+
+`--autoreload` is the one worth remembering: edit `pipeline.py`, save, and the
+graph redraws itself.
+
+### Running Viz on a REMOTE machine (Azure ML compute instance)
+
+This is where `--host 0.0.0.0` comes in, and where people get stuck.
+
+By default Viz listens on `127.0.0.1`, which means **"only this machine"**. On
+your laptop that's fine. On a remote VM it means nothing outside can reach it.
+
+```bash
+python -m kedro viz run --host 0.0.0.0 --port 4141 --no-browser
+```
+
+But `--host 0.0.0.0` alone is **not enough** — you still can't type
+`http://0.0.0.0:4141` anywhere. `0.0.0.0` isn't an address you visit; it means
+"accept connections on every network interface."
+
+On an **Azure ML compute instance** you reach it through Azure's proxy URL:
+
+```
+https://<compute-instance-name>-4141.<region>.instances.azureml.ms/
+```
+
+So a compute instance named `ci-house-price` in `centralindia` on port 4141:
+
+```
+https://ci-house-price-4141.centralindia.instances.azureml.ms/
+```
+
+Note it's **https**, and there is **no port after the hostname** — the port is
+baked into the *name* (`-4141`). That surprises everyone the first time.
+
+> There is no `--no-browser` need to remember here: there's no browser on the VM
+> to open anyway. Add it to stop Viz complaining.
+
+### When it still doesn't work
+
+| What you see | What it means |
+|---|---|
+| `Starting Kedro Viz ...` then nothing | You didn't wait long enough. Give it 30s and watch for **"started successfully"**. |
+| `command not found: kedro` | Use `python -m kedro viz run`, or activate the venv first. |
+| `Could not find a Kedro project` | You're not in the project root — `cd` to the folder with `pyproject.toml`. |
+| Blank/empty canvas | Check the **pipeline dropdown** top-left. If `__default__` is genuinely empty, your `register_pipelines()` isn't summing them. |
+| Page won't load on a remote VM | You used `127.0.0.1`. Use `--host 0.0.0.0` **and** the `instances.azureml.ms` proxy URL above. |
+| `address already in use` | Viz is already running from an earlier attempt. Use `--port 4142`, or kill the old process. |
+| Graph is stale after editing | Restart, or use `--autoreload`. |
+
+---
 ---
 ##### Later Use for Hook Development
 ---

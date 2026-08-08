@@ -128,11 +128,14 @@ click the **Terminal** icon (or **Compute → Applications → Terminal**). You 
 have a shell on a cloud VM.
 
 **Route 1 — git clone (the right way, once the project is in a repo)**
-```bash
-cd ~/cloudfiles/code/Users/$USER
-git clone <your-repo-url> house-price
-cd house-price
-```
+👉 **Full walkthrough in [`GITHUB_SETUP.md`](GITHUB_SETUP.md)** — authentication
+(SSH key or PAT), where to clone, and how to push your changes back to the
+parent repo. Do that first if your project is already in a repo, then come back
+here for section F.
+
+> **Why it's a separate file:** git authentication has nothing to do with Azure
+> ML — it's the same on any Linux machine. Keeping it out means this guide stays
+> about Azure ML, and you can hand `GITHUB_SETUP.md` to someone on its own.
 
 **Route 2 — upload (fine for right now, no repo yet)**
 In the **Notebooks** tab, use the **Upload folder** button and upload
@@ -143,7 +146,6 @@ work on Linux, and the data regenerates itself.
 > compute instance in the workspace. Files there survive stopping/deleting the
 > instance and are visible to your teammates. Anything you save *outside*
 > `cloudfiles` lives only on that VM's local disk and is lost if it's deleted.
-> **Always work inside `~/cloudfiles/code/Users/<you>/`.**
 
 ---
 
@@ -174,6 +176,42 @@ ls -R data/06_models/          # versioned model folders (timestamped)
 
 > Note `python -m kedro` rather than plain `kedro` — same trick as on Windows,
 > and it works everywhere, so just keep the habit.
+
+### Seeing the pipeline graph here (Kedro Viz on a compute instance)
+
+You can draw the pipeline on the compute instance too — but reaching it needs one
+Azure-specific step that catches everyone.
+
+```bash
+python -m kedro viz run --host 0.0.0.0 --port 4141 --no-browser
+```
+
+`--host 0.0.0.0` is required. The default (`127.0.0.1`) means *"only this
+machine"*, so nothing outside the VM could ever connect.
+
+But `0.0.0.0` is **not an address you visit.** You reach the compute instance
+through Azure's proxy URL, where **the port is part of the hostname**:
+
+```
+https://<compute-instance-name>-<port>.<region>.instances.azureml.ms/
+```
+
+For our `ci-house-price` instance in `centralindia` on port 4141:
+
+```
+https://ci-house-price-4141.centralindia.instances.azureml.ms/
+```
+
+Note it's **https**, and there's **no `:4141` at the end** — the port lives in
+the name. Typing `http://<instance>:4141` will never work, and that is the usual
+reason "Kedro Viz won't load on Azure."
+
+⏳ Also: wait for **`Kedro Viz started successfully`** before opening the URL.
+`Starting Kedro Viz ...` appears instantly but the server needs another 10–30
+seconds.
+
+> Full Kedro Viz guide — flags, `--autoreload`, and troubleshooting — is in
+> [`house-price/TUTORIAL.md`](../house-price/TUTORIAL.md).
 
 ---
 
@@ -230,18 +268,22 @@ session.run()                          # or session.run(pipeline_name="__default
 ## H) Where this is heading (so the picture connects)
 
 You've now run the pipeline three ways: laptop, Kubernetes-shaped (Part 4), and
-Azure ML compute. The remaining parts wire them together:
+Azure ML compute — and your code moves between laptop and cloud through git. The
+remaining parts wire it all together:
 
 | Part | What it adds |
 |---|---|
-| 6 — Docker | Seal the project into an image (fixes "works on my machine" for real) |
-| 7 — ACR / Azure Artifacts | Private homes for your images and your Python packages |
-| 8 — Entra ID | Who is allowed to do what (identity & permissions) |
-| 9 — Azure DevOps CI | Build + scan + deploy automatically on every push |
+| 6 — FastAPI + APIM | A guarded web address so other programs can use the model |
+| 7 — Azure ML Jobs | Submit runs to a *compute cluster* and see the pipeline graph |
+| 8 — Docker | Seal the project into an image (fixes "works on my machine" for real) |
+| 9 — Azure Artifacts | A private, scanned home for your Python packages |
+| 10 — Entra ID | Who is allowed to do what (identity & permissions) |
+| 11 — Azure DevOps CI | Build + scan + deploy automatically on every push |
 
-Azure ML also has a **Jobs** feature that submits your code to a *compute cluster*
-(scale to zero when idle) and records every run. That's the natural upgrade from
-the compute instance, and it slots in once we have a container image.
+**Part 7 is the direct sequel to this one.** A compute instance is a machine you
+sit at and type on; a **job** is work you *submit*, which runs on a cluster that
+scales to zero and records everything — including, thanks to
+[`GITHUB_SETUP.md`](GITHUB_SETUP.md), the exact git commit that ran.
 
 ---
 
@@ -278,7 +320,12 @@ az ml compute list -o table        # ← run this before you walk away
 ---
 
 ## Next up (Part 6)
-**Docker** — what a `Dockerfile`, a base image and `docker-compose` actually are;
-then building a real image for `house-price` on Python 3.12 pulled from **MCR**
-(Microsoft Container Registry) and pushing it to your **private ACR**. That image
-is the missing piece for both the Part 4 Kubernetes Job and Azure ML Jobs.
+**FastAPI + Azure APIM** — we put a web address on the model so other programs
+can use it, then a security guard (APIM, checking **ADFS / Entra ID** tokens) in
+front of that address.
+
+Then **Part 7 — Azure ML Jobs** picks this part straight back up: instead of
+typing `kedro run` in a terminal, you *submit* the pipeline as a recorded job and
+watch it draw itself as a clickable graph.
+
+---

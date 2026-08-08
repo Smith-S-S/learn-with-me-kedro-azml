@@ -40,6 +40,124 @@ That last row is why regulated companies insist on it.
 
 ---
 
+## "But I can just open a terminal and run it" — the honest answer
+
+This is the right question to ask, and the answer starts with: **you are correct.**
+
+If you create a **compute instance**, open its terminal, and type
+`python -m kedro run`, it works. You get the same model, the same `metrics.json`,
+the same R² of 0.993. Nothing about that is wrong or fake.
+
+So why bother with jobs at all?
+
+### First, what a compute instance actually is
+A **compute instance is a rented laptop.** It is one virtual machine, assigned to
+you personally, that you log into and type commands on.
+
+That is genuinely useful — it's a bigger machine than yours, it sits next to your
+data, and it has Azure permissions built in. But notice what it *isn't*: it's
+still just **a computer with a terminal**. Running Kedro there is the same act as
+running it on your own laptop. **The laptop simply moved to Azure.**
+
+That solves the "my machine is too small" problem. It solves none of the others.
+
+### What the terminal doesn't give you
+
+When you type `python -m kedro run` in that terminal, here is what does **not**
+happen:
+
+| What's missing | Why it hurts later |
+|---|---|
+| **No record** | Nothing in the Jobs list. In three weeks, no way to prove the run happened or see what it produced. |
+| **No code snapshot** | Azure never saw your code. You edited `nodes.py` afterwards, so what actually ran is now unknowable. |
+| **No environment record** | You `pip install`ed something once to make it work. Nobody knows what. See below — this is the big one. |
+| **No metrics history** | You cannot compare last night's R² against tonight's, because neither was stored. |
+| **No graph** | Nothing to click. The pipeline UI comes from a *pipeline job*, not from a terminal. |
+| **Nobody else can see it** | It happened inside your personal VM. Your colleague has no view of it. |
+| **Can't be automated** | A CronJob or a CI pipeline cannot "type into your terminal". A job can be submitted by a machine. |
+| **Dies with the connection** | Lose your network and the foreground process can be killed. (`nohup` or `tmux` works around it — but you have to remember.) |
+
+### The one that actually bites people: environment drift
+
+This is worth its own paragraph, because it is the most common real failure.
+
+On a compute instance you install things by hand. `pip install evidently` here,
+`pip install mlflow` there, over weeks. It works — for you, on that machine.
+
+Then three months later someone must reproduce your result, and:
+- nobody knows which packages were installed, or at which versions;
+- the instance was deleted to save money, taking the answer with it;
+- or *you* upgraded something and your own pipeline now behaves differently, and
+  you have no baseline to compare against.
+
+A job cannot drift, because its environment is **declared in the YAML**:
+
+```yaml
+environment: azureml://registries/azureml/environments/sklearn-1.5.../labels/latest
+command: pip install -r requirements.txt && python -m kedro run
+```
+
+Run it today or in two years — same declared environment, same code snapshot,
+same result. **The YAML is the record.** Nothing depends on what a particular
+machine happens to have installed.
+
+### And the money difference
+
+| | **Compute instance** | **Compute cluster (jobs)** |
+|---|---|---|
+| Who it's for | Just you | Any job that's submitted |
+| When it bills | **The whole time it is "Running"** — coding, on a call, at lunch, asleep | **Only while a job runs** |
+| Idle cost | ~$0.27/hr on `DS3_v2` ≈ **$195/month** if left on | **$0** at `--min-instances 0` |
+| Who turns it off | **You. By hand.** (Set auto-shutdown!) | Azure, automatically |
+
+Forgetting to stop a compute instance is *the* most common way people get a
+surprise Azure bill. The cluster switching itself off is not a small convenience.
+
+### So: which should you use?
+
+Both. They're not rivals — they're different phases of the same work:
+
+| Use the **terminal** when... | Submit a **job** when... |
+|---|---|
+| Exploring, debugging, trying an idea | The result matters to someone else |
+| You want the answer in 10 seconds | You need to prove what ran |
+| A quick `kedro run --nodes train_model_node` | It should happen on a schedule |
+| Poking at data in a notebook | You want the pipeline graph |
+| Iterating fast on code that's still broken | It's going to production |
+
+> **The rule of thumb:**
+> **Terminal = the workbench. Job = the record.**
+> Develop in the terminal, where fast and messy is exactly right. Submit a job
+> for anything you'd need to *repeat, defend, schedule, or hand to someone else*.
+
+And they combine — the compute instance is an excellent place to *submit jobs
+from*. `az` is already installed and already logged in:
+
+```bash
+# on the compute instance terminal:
+python -m kedro run                                  # quick check, 10 seconds
+az ml job create --file pipeline-job.yml             # the real, recorded run
+```
+
+That's the normal working pattern: iterate in the terminal until it's right,
+then submit it as a job so it counts.
+
+### The honest downside of jobs
+So the terminal isn't just a worse option — it's genuinely better for some things:
+
+- **Jobs are slower to start.** Upload the code, queue, boot the cluster: 2–5
+  minutes before your first line of output. The terminal answers instantly.
+- **Debugging is clumsier.** A typo costs you a full submit-and-wait cycle
+  instead of two seconds.
+- **More moving parts.** YAML, environments, compute names — all of which can be
+  wrong in their own ways.
+
+Which is exactly why you develop in the terminal first. **Get it working there,
+then submit it as a job.** Nobody should be debugging a typo through a
+five-minute feedback loop.
+
+---
+
 ## The vocabulary
 
 | Word | Plain meaning |
@@ -48,7 +166,8 @@ That last row is why regulated companies insist on it.
 | **Job** | One run of one piece of work. Also called a **run**. |
 | **Experiment** | A named folder grouping related jobs, so you can compare them. |
 | **Compute** | The machine that runs the job. |
-| **Compute cluster** | A machine that starts when work arrives and **switches off when idle**. |
+| **Compute instance** | **A rented laptop.** One VM, yours personally, that you log into and type in. Bills the whole time it's on. |
+| **Compute cluster** | A pool of machines that starts when a job arrives and **switches off when idle**. Jobs run here. |
 | **Environment** | The container image + libraries the job runs inside. |
 | **Command job** | The simple kind: one command, **one box** in the UI. |
 | **Pipeline job** | Several steps wired together — **this is the one that draws the graph**. |
@@ -330,6 +449,9 @@ az group delete --name my-ml-rg --yes --no-wait
 ## What you now understand
 - A **job** is work you hand to Azure: it finds a machine, runs it, records
   everything, and switches the machine off.
+- A **compute instance is a rented laptop**; typing `kedro run` in its terminal
+  gives the same model but **no record, no snapshot, no graph, and no automation**
+  — and it bills while idle. **Terminal = the workbench, job = the record.**
 - **Command job** = one box. **Pipeline job** = the flowchart you wanted.
 - The **arrows are generated** from `inputs`/`outputs` references — you describe
   the plumbing, Azure draws the picture. Exactly like Kedro.
