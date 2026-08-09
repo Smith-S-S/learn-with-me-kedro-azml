@@ -199,6 +199,204 @@ See `azure-pipelines-artifacts.yml`. The essential step is:
     onlyAddExtraIndex: false     # <-- keep false; true reopens the attack above
 ```
 
+## *2. Point `pip` at the Azure Artifacts feed from the Compute Instance
+
+We will configure `pip` **inside the compute instance only**. Your personal/laptop Python configuration does not need to be changed.
+
+Your Azure Artifacts feed is:
+
+`house-price` project → `my-python-feed`
+
+### If your Compute Instance is Linux
+
+Open the terminal of the compute instance and run:
+
+```bash
+mkdir -p ~/.pip
+nano ~/.pip/pip.conf
+```
+
+Add:
+
+```ini
+[global]
+index-url = https://pkgs.dev.azure.com/funoffun21/house-price/_packaging/my-python-feed/pypi/simple/
+timeout = 60
+retries = 3
+```
+
+Save the file.
+
+You can check that it was created with:
+
+```bash
+cat ~/.pip/pip.conf
+```
+
+From now on, `pip` running **inside this compute instance** will know that the Azure Artifacts feed is its package source.
+
+> **Important:** This only configures `pip` inside this compute instance. It does not change the `pip` configuration on your personal computer.
+
+---
+
+## 3. Authenticate from the Compute Instance
+
+The feed is private, so the compute instance needs permission to access it.
+
+Install the Azure Artifacts credential helper:
+
+```bash
+pip install keyring artifacts-keyring
+```
+
+Then try installing a package from the feed:
+
+```bash
+pip install pandas -v
+```
+
+If authentication is required, `artifacts-keyring` can handle Azure DevOps authentication.
+
+If your compute environment cannot open a browser, use the authentication method provided by your organization's Azure DevOps setup rather than putting a PAT directly into the `pip.conf` URL.
+
+### Avoid putting a PAT in `pip.conf`
+
+Do **not** normally put this:
+
+```text
+https://anything:YOUR-PAT@pkgs.dev.azure.com/...
+```
+
+into `pip.conf`.
+
+A PAT can end up in configuration files, shell history, logs, or Git commits.
+
+---
+
+## 4. Test the connection
+
+From the **compute instance terminal**, run:
+
+```bash
+pip install pandas -v
+```
+
+Look through the output for:
+
+```text
+pkgs.dev.azure.com
+```
+
+This confirms that `pip` is using the Azure Artifacts feed.
+
+You can also check the configuration with:
+
+```bash
+pip config list
+```
+
+You should see your Azure Artifacts `index-url`.
+
+### Important
+
+Because we are using:
+
+```ini
+index-url = https://pkgs.dev.azure.com/funoffun21/house-price/_packaging/my-python-feed/pypi/simple/
+```
+
+the Azure feed is the main package source.
+
+There is deliberately no:
+
+```ini
+extra-index-url
+```
+
+---
+
+## 5. Use the feed in CI
+
+For Azure Pipelines, authentication should be handled by the pipeline rather than by copying your local credentials into the repository.
+
+Use:
+
+```yaml
+- task: PipAuthenticate@1
+  inputs:
+    artifactFeeds: 'house-price/my-python-feed'
+    onlyAddExtraIndex: false
+```
+
+This authenticates the pipeline to the Azure Artifacts feed.
+
+Your repository should **not** contain your personal PAT or credentials.
+
+---
+
+## 6. The complete flow
+
+The setup now looks like this:
+
+```text
+Your Compute Instance
+        │
+        │ pip install ...
+        ↓
+   ~/.pip/pip.conf
+        │
+        │
+        ↓
+Azure DevOps
+funoffun21
+    │
+    └── house-price
+          │
+          └── my-python-feed
+                    │
+                    ↓
+             Python packages
+```
+
+### In simple terms
+
+**Compute instance:**
+
+```bash
+pip install my-company-package
+```
+
+↓
+
+`pip` reads:
+
+```text
+~/.pip/pip.conf
+```
+
+↓
+
+It knows to use:
+
+```text
+funoffun21 / house-price / my-python-feed
+```
+
+↓
+
+Azure DevOps checks authentication.
+
+↓
+
+If you have permission, the package is downloaded and installed.
+
+---
+
+### Your Azure Artifacts feed
+
+[Open the my-python-feed feed in Azure DevOps](https://dev.azure.com/funoffun21/house-price/_artifacts/feed/my-python-feed?utm_source=chatgpt.com)
+
+
 **Why this step is needed at all:** the build agent is a brand new machine that
 has never logged into anything. Without it you get `401 Unauthorized`, and the
 error doesn't obviously point at the missing auth step.
@@ -277,6 +475,9 @@ versions automatically.
 - Use **`--mount=type=secret`** in Docker so credentials never land in a layer.
 
 ## Next up (Part 10)
-**Microsoft Entra ID** end-to-end — the identity system behind the tokens APIM
-validated back in Part 6. We register an app, define scopes and roles, and issue
-a real token against our own API.
+**Putting it all together** — nine parts have given you nine working pieces that
+aren't yet connected. Part 10 wires them into one running system: image → ACR →
+AKS → APIM, with the trained model travelling from the pipeline to the API
+through Azure Blob Storage.
+
+Then **Part 11 (Entra ID)** issues the real tokens the APIM policy validates.

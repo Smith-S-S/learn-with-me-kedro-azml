@@ -73,7 +73,7 @@ Read it in three pieces:
 | `azurelinux/base/python` | **What** it is — Python on Azure Linux, Microsoft's own hardened OS |
 | `:3.12` | **Which version** — the tag |
 
-### Why MCR rather than Docker Hub?
+### Why MCR rather than Docker Hub? was this one we see mostly ==> FROM python:3.11-slim
 This one matters in a corporate setting, and it's a question you'll be asked:
 
 | Reason | The detail |
@@ -233,20 +233,20 @@ pulled by anyone and may leak internal details.
 
 ```bash
 # 1. Create the registry (names must be globally unique, letters+numbers only)
-az acr create --resource-group my-ml-rg --name mycompanyacr --sku Basic
+az acr create --resource-group my-ml-rg --name myk0mpany --sku Basic
 
 # 2. Log in. This quietly hands Docker a token -- no password typing.
-az acr login --name mycompanyacr
+az acr login --name myk0mpany
 
 # 3. Tag the image with the registry address.
 #    An image can only be pushed to the registry named in its own tag.
-docker tag house-price-api:1.0 mycompanyacr.azurecr.io/house-price-api:1.0
+docker tag house-price-api:1.0 myk0mpany.azurecr.io/house-price-api:1.0
 
 # 4. Push
-docker push mycompanyacr.azurecr.io/house-price-api:1.0
+docker push myk0mpany.azurecr.io/house-price-api:1.0
 
 # 5. Check it arrived
-az acr repository list --name mycompanyacr --output table
+az acr repository list --name myk0mpany --output table
 ```
 
 ### The MCR → ACR pattern your organization uses
@@ -255,15 +255,23 @@ all. Instead they **mirror** approved base images into ACR first:
 
 ```bash
 # Pull an approved base image from MCR into your private ACR, once
-az acr import --name mycompanyacr ^
+az acr import --name myk0mpany ^
   --source mcr.microsoft.com/azurelinux/base/python:3.12 ^
   --image base/python:3.12
+```
+OR
+
+```bash
+# Pull an approved base image from MCR into your private ACR, once
+az acr import --name myk0mpany \
+ --source mcr.microsoft.com/azurelinux/base/python:3.12 \
+ --image base/python:3.12
 ```
 
 Then every internal Dockerfile starts from the *private* copy:
 
 ```dockerfile
-FROM mycompanyacr.azurecr.io/base/python:3.12
+FROM myk0mpany.azurecr.io/base/python:3.12
 ```
 
 **Why:** the security team scans and approves that one image. Nothing enters the
@@ -293,7 +301,7 @@ layer up.
 | ACR Standard | ~$20/month |
 
 ```bash
-az acr delete --name mycompanyacr --resource-group my-ml-rg --yes
+az acr delete --name myk0mpany --resource-group my-ml-rg --yes
 docker system prune -a     # reclaim local disk
 ```
 

@@ -31,7 +31,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # --- SECRETS: never let these into an image ---
-conf/local/
+conf/local/credentials.yml
 .env
 *.pem
 *.key

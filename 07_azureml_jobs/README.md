@@ -225,7 +225,13 @@ az configure --defaults group=my-ml-rg workspace=my-ml-workspace
 All commands below assume you've done this. If you skip it, add both flags to
 every command.
 
-### 5. Create a compute cluster — **read the `--min-instances 0` note**
+### 5. Create the compute — a cluster, an instance, or both
+
+A job needs a machine to run on. You have **two options**, and they both work for
+every job in this part. Create either one (or both — they cost nothing extra to
+merely exist).
+
+#### Option A — a compute **cluster** (the default for real runs)
 ```bash
 az ml compute create \
   --name cpu-cluster \
@@ -250,19 +256,88 @@ az ml compute create \
 > surprise Azure bill, and it catches people constantly.
 >
 > The trade-off: a cold cluster takes **2–5 minutes** to start your first job.
-> That is the cluster booting, not a hang. Worth it.
+> That is the cluster booting, not a hang.
+
+#### Option B — a compute **instance** (faster while you're learning)
+You may already have `ci-house-price` from Part 5. If not:
+
+```bash
+az ml compute create \
+  --name ci-house-price \
+  --type computeinstance \
+  --size Standard_DS11_v2 \
+  --idle-time-before-shutdown-minutes 30
+```
+
+> ⚠️ **`--idle-time-before-shutdown-minutes` is the instance's version of
+> `--min-instances 0`.** It is **not on by default**. Without it, the machine
+> bills every hour until you stop it by hand.
+
+An instance must be **Running** before it can accept a job — it does not start
+itself:
+```bash
+az ml compute show --name ci-house-price --query "state" -o tsv   # want: Running
+az ml compute start --name ci-house-price                          # if not
+```
+
+#### Which should you use?
+
+| | **Cluster** (`cpu-cluster`) | **Instance** (`ci-house-price`) |
+|---|---|---|
+| Start-up delay | **2–5 min** (boots from zero) | **None** — already running |
+| Cost when idle | **$0** | Bills until you stop it |
+| Machines | Up to `--max-instances` | Always exactly 1 |
+| Best for | Real runs, schedules, teams | **Debugging, fast retries, learning** |
+
+> **The practical pattern:** use the **instance** while you're getting a job to
+> work — a typo costs you seconds instead of five minutes. Switch to the
+> **cluster** once it runs clean. Same YAML either way; only the compute changes.
+>
+> More detail: [`USING_COMPUTE_INSTANCE.md`](USING_COMPUTE_INSTANCE.md)
 
 ---
 
 ## Run 1: a command job (the simple one)
 
+### Step 1 — copy the ignore file (once)
 ```bash
-# copy the ignore file so we don't upload .venv
 copy 07_azureml_jobs\.amlignore house-price\
+```
+Without it, Azure falls back to `.gitignore` and you may upload `.venv/` —
+hundreds of megabytes on **every** submit.
 
+### Step 2 — submit it
+
+`command-job.yml` already says `compute: azureml:cpu-cluster`, so the plain
+command uses the **cluster**. To use the **instance** instead, override it with
+`--set` — no file editing needed.
+
+**On the cluster** (uses the YAML as written):
+```bash
 cd house-price
 az ml job create --file ../07_azureml_jobs/command-job.yml
 ```
+
+**On the compute instance** (override at submit time):
+```bash
+cd house-price
+az ml job create \
+  --file ../07_azureml_jobs/command-job.yml \
+  --set compute=azureml:ci-house-price
+```
+
+> **What `--set` does:** it patches one value in the YAML *for this submission
+> only*. The file on disk is untouched, so the same YAML still targets the
+> cluster next time. One definition, two targets.
+
+> 🐚 **Line-continuation characters differ by shell** — this trips people up:
+> | Shell | Character |
+> |---|---|
+> | Bash / Git Bash / the compute instance terminal | `\` |
+> | Windows CMD | `^` |
+> | PowerShell | `` ` `` (backtick) |
+>
+> Or just put the whole command on **one line** and avoid the problem entirely.
 
 Azure prints a chunk of JSON. The bit you want is `name` — a random-looking id
 like `sincere_pin_abc123xyz`. That's the job's handle.
@@ -271,6 +346,13 @@ like `sincere_pin_abc123xyz`. That's the job's handle.
 ```bash
 az ml job stream --name sincere_pin_abc123xyz
 ```
+
+You get this from --name sincere_pin_abc123xyz
+
+```bash
+house-price/jobs/===> upbeat_car_dr7p4sd00x <===", "inputs": {}, "name": "upbeat_car_dr7p4sd00x", "outputs": { "default": { "mode": "rw_mount"
+```
+
 This tails the logs live in your terminal — you'll see the same Kedro output you
 get locally, only it's happening on a machine in Azure.
 
@@ -289,10 +371,37 @@ That's correct — a command job *is* one step. Now for the graph.
 
 ## Run 2: the pipeline job — **this is the one with the UI**
 
+Same two choices, but ⚠️ **the property name is different.** A pipeline job has
+no top-level `compute:` — its machine is set under `settings.default_compute`,
+which applies to every step at once.
+
+**On the cluster** (uses the YAML as written):
 ```bash
 cd house-price
 az ml job create --file ../07_azureml_jobs/pipeline-job.yml
 ```
+
+**On the compute instance:**
+```bash
+cd house-price
+az ml job create \
+  --file ../07_azureml_jobs/pipeline-job.yml \
+  --set settings.default_compute=azureml:ci-house-price
+```
+
+| Job type | What to override |
+|---|---|
+| Command job | `--set compute=azureml:<name>` |
+| **Pipeline job** | `--set settings.default_compute=azureml:<name>` |
+
+> Using `--set compute=...` on a pipeline job **silently does nothing useful** —
+> it adds a property the schema doesn't read there, and your steps still run on
+> whatever `settings.default_compute` says. If a job lands on the wrong machine,
+> this is the first thing to check.
+
+> **One step, one machine:** you can also give an individual step its own
+> `compute:` — cheap CPU for data prep, expensive GPU for training. Anything set
+> on a step wins over `settings.default_compute`.
 
 Open <https://ml.azure.com> → **Jobs** → **house-price-training** → your run.
 
@@ -442,41 +551,146 @@ You don't have to write them. The `kedro-azureml` plugin reads your Kedro
 pipeline and **generates the Azure ML pipeline for you** — one Azure ML step per
 Kedro node, with all the wiring derived from your catalog:
 
+### Step 1 — install it
 ```bash
-pip install kedro-azureml        # version 1.0.0, needs Python 3.9-3.12
+pip install kedro-azureml        # v1.0.0, needs Python 3.9-3.12
+```
+Also add `kedro-azureml` to `house-price/requirements.txt`, or the machine
+running the job won't have it.
 
+### Step 2 — `kedro azureml init`
+
+⚠️ **The five main arguments are POSITIONAL, not named flags.** There is no
+`--subscription-id` or `--cluster-name` option. The order is fixed:
+
+```
+kedro azureml init [OPTIONS] SUBSCRIPTION_ID RESOURCE_GROUP WORKSPACE_NAME EXPERIMENT_NAME CLUSTER_NAME
+```
+
+```bash
 cd house-price
 
-kedro azureml init ^
-  --azure-subscription-id <sub-id> ^
-  --resource-group my-ml-rg ^
-  --workspace-name my-ml-workspace ^
-  --experiment-name house-price-training ^
-  --cluster-name cpu-cluster
-
-OR
-
 kedro azureml init \
-  vvv-xx-x-xx-63264xx2e6d7de \
-  rg-azureml-demo \
-  mlw-house-price \
-  house-price-training \
-  ci-house-price \
-  --azureml-environment azureml://registries/azureml/environments/sklearn-1.5/labels/latest \
-  --use-pipeline-data-passing 
-  
-#  --use-pipeline-data-passing -> This is say the pipeline to handle the data passing for us, and it will do the storing and all by itself, just like the original kedro run
+  00000000-0000-0000-0000-000000000000 \   # 1. SUBSCRIPTION_ID
+  rg-azureml-demo \                        # 2. RESOURCE_GROUP
+  mlw-house-price \                        # 3. WORKSPACE_NAME
+  house-price-training \                   # 4. EXPERIMENT_NAME
+  cpu-cluster \                            # 5. CLUSTER_NAME (or ci-house-price)
+  --azureml-environment azureml:kedro-house-price@latest \
+  --use-pipeline-data-passing
+```
 
+> 😌 **`init` is completely safe.** It only writes a local config file,
+> `conf/base/azureml.yml`. It creates nothing in Azure and costs nothing, so run
+> it, look at the file it produced, and re-run with different values freely.
 
+#### The options that matter
+
+| Option | What it does |
+|---|---|
+| `--use-pipeline-data-passing` | **The important one** — see below |
+| `-a` / `-c` | The alternative: your own storage account + container for intermediate data |
+| `--azureml-environment`, `--aml-env` | Which environment the steps run in |
+| `-d`, `--docker-image` | Use a Docker image instead (that's Part 8) |
+
+### 🎯 `--use-pipeline-data-passing` — the flag that fixes our two-box problem
+
+Remember why our hand-written `pipeline-job.yml` could only manage **two** boxes:
+`welcome_message`, `X_test` and `y_test` are MemoryDatasets, and memory doesn't
+survive between machines.
+
+**This flag solves exactly that.** It tells the plugin to move intermediate
+datasets between steps using Azure ML's built-in pipeline data passing — so every
+Kedro node can become its own step, with **no catalog changes and no `cp` glue**.
+
+It is an either/or:
+
+| Choice | What you must supply |
+|---|---|
+| `--use-pipeline-data-passing` | Nothing else. Azure ML's own storage handles it. |
+| Neither flag | `-a <storage-account> -c <container>` — your own Blob Storage |
+
+> ⚠️ The plugin's docs mark pipeline data passing **EXPERIMENTAL**. Fine for
+> learning; check it still suits you before depending on it for production.
+
+### Step 3 — ⚠️ the environment needs Kedro in it
+
+This is the most likely thing to fail, so read it before you run.
+
+A **curated** environment like
+`azureml://registries/azureml/environments/sklearn-1.5/labels/latest` contains
+scikit-learn and pandas — but **not `kedro` and not `kedro-azureml`**. The plugin
+runs `kedro azureml execute ...` on the machine, so you'd get:
+
+```
+ModuleNotFoundError: No module named 'kedro'
+```
+
+Our hand-written YAML dodged this because its command starts with
+`pip install -r requirements.txt`. **The plugin does not do that for you.**
+
+So build a small environment that has them. `environment.yml`:
+
+```yaml
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: kedro-house-price
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+conda_file: conda.yml
+```
+
+`conda.yml`:
+
+```yaml
+name: kedro-house-price
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - kedro
+      - kedro-azureml
+      - kedro-datasets
+      - pandas
+      - scikit-learn
+```
+
+```bash
+az ml environment create --file environment.yml
+```
+
+Then pass `--azureml-environment azureml:kedro-house-price@latest` to `init`.
+
+### Step 4 — run it
+```bash
 kedro azureml run
 ```
 
-The graph in the Studio then mirrors your Kedro pipeline **exactly** — including
-`say_hi_at_start_node` and `say_hi_at_end_node`.
+### Using a compute instance instead of a cluster
+The fifth positional is called `CLUSTER_NAME`, but it simply becomes
+`compute_name` in `azureml.yml` — and Azure ML accepts a compute instance as a
+job target. So `ci-house-price` works there.
+
+Two caveats: the instance must be **Running** (otherwise the run sits in Queued
+forever), and being single-node it runs the steps **one after another** instead of
+in parallel. For this project that's a fine trade for the instant start-up.
+
+The graph in the Studio then mirrors your Kedro pipeline **exactly** — six boxes,
+one per node, including `say_hi_at_start_node` and `say_hi_at_end_node`.
+
+Compare that with what we built by hand:
+
+| | Hand-written `pipeline-job.yml` | `kedro-azureml` |
+|---|---|---|
+| Boxes in the graph | **2** (catalog boundaries only) | **6** — one per node |
+| Intermediate data | You persist it in `catalog.yml` | Handled by pipeline data passing |
+| `cp` / `mkdir` glue | You write it | None |
+| Stays in sync with `pipeline.py` | ❌ you update the YAML by hand | ✅ generated each run |
 
 **So why write the YAML by hand at all?** Because when the plugin misbehaves —
 and plugins do — you need to know what it was generating for you. The YAML is
-the thing that actually runs; the plugin is a convenience on top.
+the thing that actually runs; the plugin is a convenience on top. You've now hit
+the exact wall (`MemoryDataset` between machines) that the plugin exists to
+solve, which is the best possible moment to let it take over.
 
 ---
 
@@ -486,7 +700,13 @@ the thing that actually runs; the plugin is a convenience on top.
 |---|---|
 | `az ml` not recognised | Extension missing: `az extension add --name ml` |
 | Job sits in **Queued** for minutes | Normal. Cluster is starting from zero. |
-| Job stuck **Queued** forever | `--max-instances` is 0, or your quota is exhausted. Check `az ml compute show --name cpu-cluster`. |
+| Job stuck **Queued** forever (cluster) | `--max-instances` is 0, or your quota is exhausted. Check `az ml compute show --name cpu-cluster`. |
+| Job stuck **Queued** forever (instance) | The instance is **Stopped**. Jobs don't start it for you: `az ml compute start --name ci-house-price`. |
+| `--set compute=...` seems ignored on a pipeline job | Wrong property. Pipeline jobs use `--set settings.default_compute=azureml:<name>`. |
+| `kedro azureml init` → `no such option: --cluster-name` | The five main arguments are **positional**, not flags. See the signature above. |
+| `kedro azureml run` → `ModuleNotFoundError: No module named 'kedro'` | Your `--azureml-environment` is a curated image without Kedro in it. Build the custom environment shown above. |
+| Plugin run fails on an intermediate dataset | You passed neither `--use-pipeline-data-passing` nor `-a`/`-c`, so there's nowhere to put data between steps. |
+| Job ran on the cluster when you wanted the instance | The `--set` didn't apply — check the shell continuation character (`\` bash, `^` cmd, `` ` `` PowerShell). A broken continuation silently drops the rest of the command. |
 | Upload takes forever | `.amlignore` missing — you're uploading `.venv/`. |
 | `AuthorizationFailed` | Wrong subscription: `az account set --subscription "..."` |
 | Step fails with `ModuleNotFoundError` | The environment lacks a library. Add it to `requirements.txt` (the command does `pip install -r requirements.txt`). |

@@ -1,0 +1,170 @@
+# =============================================================================
+# THE MISSING PIECE: running the FastAPI on Kubernetes
+# =============================================================================
+# Part 4 gave you a Job and a CronJob. Those RUN THE PIPELINE -- they start, do
+# work, and finish.
+#
+# An API is the opposite. It must never finish. It sits there waiting for calls,
+# and if it ever exits, that is a failure to be restarted.
+#
+# Kubernetes has a different object for each:
+#
+#     Job / CronJob  -> "run this until it finishes"      (Part 4: training)
+#     Deployment     -> "keep N copies of this running"   (this file: serving)
+#
+# Asking for the wrong one is the classic beginner mistake. A Deployment running
+# the pipeline would retrain forever in a loop; a Job running the API would be
+# declared "failed" the moment you stopped it.
+#
+# Apply with:  kubectl apply -f api-deployment.yaml
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: house-price-api
+  labels:
+    app: house-price-api
+spec:
+  # THREE COPIES. Kubernetes keeps exactly this many alive. If one crashes, or
+  # the machine it is on dies, Kubernetes starts a replacement automatically.
+  # This is the whole reason to be on Kubernetes rather than one VM.
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: house-price-api
+
+  template:
+    metadata:
+      labels:
+        app: house-price-api        # must match the selector above
+    spec:
+      containers:
+        - name: api
+
+          # The image we built in Part 8 and pushed to our private ACR.
+          # Note the FULL address -- registry/name:tag. Kubernetes pulls it from
+          # ACR, which is why the cluster needs permission to read that registry
+          # (see the `az aks update --attach-acr` step in the README).
+          #
+          # ⚠️ Use a REAL version tag, never `:latest`. With `latest` you cannot
+          # tell which build is running, and a rollback becomes guesswork.
+          image: mycompanyacr.azurecr.io/house-price-api:1.0
+
+          ports:
+            - containerPort: 8000   # must match the port uvicorn listens on
+
+          # -------------------------------------------------------------------
+          # WHERE THE MODEL COMES FROM
+          # -------------------------------------------------------------------
+          # The image does NOT contain a trained model -- .dockerignore excludes
+          # data/. So the container gets its model at STARTUP, from Azure Blob
+          # Storage, via the Kedro catalog.
+          #
+          # The connection string is injected here as an environment variable,
+          # read from a Kubernetes Secret. It is NEVER baked into the image.
+          env:
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: azure-storage       # created with `kubectl create secret`
+                  key: connection-string
+
+          # -------------------------------------------------------------------
+          # PROBES -- this is where /health finally earns its keep
+          # -------------------------------------------------------------------
+          # Back in Part 6 we said /health must need NO token because
+          # "Kubernetes calls it constantly". This is that.
+
+          # READINESS: "are you ready for traffic YET?"
+          # Until this passes, Kubernetes sends this pod NO requests. That is
+          # what makes a deploy seamless: new pods only receive traffic once
+          # they have actually loaded the model.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          # LIVENESS: "are you still alive?"
+          # If this fails repeatedly, Kubernetes KILLS and restarts the pod.
+          #
+          # ⚠️ Keep these two different in your head. A liveness probe that is
+          # too aggressive will kill a healthy-but-slow app in a restart loop.
+          # That is why its delay is much longer than the readiness one.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+
+          # -------------------------------------------------------------------
+          # RESOURCES -- how much machine this container may use
+          # -------------------------------------------------------------------
+          # requests = what Kubernetes RESERVES when choosing a machine.
+          # limits   = the hard ceiling; exceed memory and the pod is killed.
+          #
+          # WHY BOTHER: without requests, Kubernetes cannot pack pods sensibly
+          # and may put all three on one overloaded node. Without limits, one
+          # runaway pod can starve everything else on that machine.
+          resources:
+            requests:
+              cpu: 100m             # 100m = 0.1 of one CPU core
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+# =============================================================================
+# THE SERVICE: one stable address for all three pods
+# =============================================================================
+# Pods are disposable. They get new IP addresses when they restart, and there
+# are three of them anyway. Nothing outside should ever chase a pod IP.
+#
+# A Service is a fixed front door. It keeps a list of the healthy pods behind it
+# and spreads requests across them. Callers only ever know the Service.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: house-price-api
+spec:
+  # ClusterIP = reachable only from INSIDE the cluster.
+  #
+  # WHY NOT LoadBalancer: that would hand this API a public internet address,
+  # completely bypassing APIM -- so no token checks and no rate limiting.
+  # Everything from outside must arrive through APIM. Keeping this internal is
+  # what forces that.
+  type: ClusterIP
+
+  selector:
+    app: house-price-api            # sends traffic to pods with this label
+
+  ports:
+    - port: 80                      # the Service listens on 80
+      targetPort: 8000              # and forwards to 8000 in the container
+      protocol: TCP
+
+# =============================================================================
+# HOW APIM REACHES THIS
+# -----------------------------------------------------------------------------
+# A ClusterIP Service is private, so APIM needs a way in. Pick one:
+#
+#   1. INGRESS CONTROLLER (usual) -- an nginx or Application Gateway ingress in
+#      the cluster gives you one HTTPS address; APIM's backend points at it.
+#
+#   2. INTERNAL LOAD BALANCER -- add the annotation
+#         service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+#      and change type to LoadBalancer. You get a private VNet IP that APIM can
+#      reach if APIM is VNet-integrated. Still not public.
+#
+#   3. `kubectl port-forward` -- for LOCAL TESTING ONLY:
+#         kubectl port-forward service/house-price-api 8000:80
+#      then curl http://localhost:8000/health
+#
+# Start with 3 to prove the pods work, then wire up 1 or 2 for real traffic.
+# =============================================================================
