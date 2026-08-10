@@ -1,0 +1,41 @@
+# =============================================================================
+# The packages installed into the Azure ML environment.
+# =============================================================================
+# Keep this in step with house-price/requirements.txt. If a node imports
+# something that is missing here, the job fails on the machine, not on your
+# laptop -- which is a slow way to find out.
+# =============================================================================
+
+name: kedro-house-price
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12          # match your local version to avoid pickle surprises
+  - pip
+
+  - pip:
+      # --- the two the plugin cannot run without ---
+      - kedro
+      - kedro-azureml
+
+      # --- MUST be listed by hand: kedro-azureml forgets to declare it ---
+      # kedro_azureml/datasets/asset_dataset.py does `from cachetools import ...`
+      # but cachetools is NOT in the package's dependency list (verified with
+      # importlib.metadata.requires). So pip never installs it, the plugin's CLI
+      # fails to import, and you get the very confusing:
+      #     WARNING Failed to load kedro_azureml.cli commands ...
+      #             No module named 'cachetools'
+      #     Error: No such command 'azureml'.
+      # It works on your laptop only because cachetools happens to be installed
+      # there already (`pip show cachetools` shows an EMPTY "Required-by").
+      - cachetools
+
+      # --- what our pipeline itself needs ---
+      - kedro-datasets
+      - pandas
+      - scikit-learn
+
+      # --- optional, but handy ---
+      - mlflow            # so metrics show up on the job's Metrics tab

@@ -65,7 +65,7 @@ Four connections to make. **Three are easy. One is the interesting one.**
 ### The problem nobody warns you about
 
 Your `.dockerignore` excludes `data/`. That was correct — you don't want a
-500 MB image or a stale model baked in.
+bloated image or a stale model baked in.
 
 But it means **the image contains no model at all**. Start that container on AKS
 and `main.py` does exactly what we designed it to do:
@@ -102,7 +102,7 @@ That's about to be literally true.
 ```bash
 az storage account create \
   --name housepricemodels \
-  --resource-group my-ml-rg \
+  --resource-group rg-azureml-demo \
   --sku Standard_LRS
 
 az storage container create \
@@ -145,17 +145,17 @@ took nine parts to get somewhere it actually pays off.
 ```bash
 cd house-price
 docker build -t house-price-api:1.0 .
-docker tag house-price-api:1.0 mycompanyacr.azurecr.io/house-price-api:1.0
-az acr login --name mycompanyacr
-docker push mycompanyacr.azurecr.io/house-price-api:1.0
+docker tag house-price-api:1.0 myk0mpanyacr.azurecr.io/house-price-api:1.0
+az acr login --name myk0mpanyacr
+docker push myk0mpanyacr.azurecr.io/house-price-api:1.0
 ```
 
 ### 2. Let AKS pull from ACR
 ```bash
 az aks update \
   --name my-aks-cluster \
-  --resource-group my-ml-rg \
-  --attach-acr mycompanyacr
+  --resource-group rg-azureml-demo \
+  --attach-acr myk0mpanyacr
 ```
 
 > **What this fixes before it happens:** without it, your pods sit in
@@ -319,10 +319,10 @@ Everything running at once, unlike earlier parts:
 kubectl scale deployment/house-price-api --replicas=0
 
 # Stop the AKS cluster entirely (biggest saving)
-az aks stop --name my-aks-cluster --resource-group my-ml-rg
+az aks stop --name my-aks-cluster --resource-group rg-azureml-demo
 
 # Full teardown
-az group delete --name my-ml-rg --yes --no-wait
+az group delete --name rg-azureml-demo --yes --no-wait
 ```
 
 > ⚠️ **Do not leave an AKS cluster running after finishing this part.** It is the

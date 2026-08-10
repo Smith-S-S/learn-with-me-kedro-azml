@@ -6,7 +6,7 @@
 #
 # WHY IT MATTERS (three real reasons, not just tidiness):
 #
-#  1. SPEED. Without this, the 500MB .venv folder gets sent on every build.
+#  1. SPEED. Without this, the .venv folder gets sent on every build (a measured 1.3 GB here).
 #  2. CORRECTNESS. .venv holds Windows executables. Copying them into a Linux
 #     container gives you a broken environment that fails in confusing ways.
 #     The image must install its OWN Linux libraries -- which the Dockerfile does.

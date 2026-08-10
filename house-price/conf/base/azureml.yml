@@ -1,0 +1,45 @@
+azure:
+  # Azure subscription ID to use
+  subscription_id: "1268fd42-f434-4927-a1a6-632642e6d7de"
+  # Azure ML Experiment Name
+  experiment_name: "house-price-training"
+  # Azure resource group to use
+  resource_group: "rg-azureml-demo"
+  # Azure ML Workspace name
+  workspace_name: "mlw-house-price"
+  # Azure ML Environment to use during pipeline execution
+  environment_name: kedro-house-price@latest
+  # Path to directory to upload, or null to disable code upload
+  code_directory: .
+  # Path to the directory in the Docker image to run the code from
+  # Ignored when code_directory is set
+  working_directory: /home/kedro_docker
+  # Use Azure ML pipeline data passing instead of temporary storage
+  pipeline_data_passing:
+    enabled: True # disabled by default
+
+  # Temporary storage settings - this is used to pass some data between steps
+  # if the data is not specified in the catalog directly
+  temporary_storage:
+    # Azure Storage account name, where the temp data should be stored
+    # It's recommended to set Lifecycle management rule for storage container, to avoid costs of long-term storage
+    # of the temporary data. Temporary data will be stored under abfs://<containter>/kedro-azureml-temp path
+    # See https://docs.microsoft.com/en-us/azure/storage/blobs/lifecycle-management-policy-configure?tabs=azure-portal
+    account_name: ~
+    # Name of the storage container
+    container: ~
+  compute:
+    # Azure compute used for running kedro jobs.
+    # Additional compute cluster can be defined here. Individual nodes can reference specific compute clusters by adding
+    # the section title (e.g. <your_node_tag>) as a node_tag to their tags list. Nodes without a tag will run on
+    # __default__ cluster.
+    __default__:
+      cluster_name: "ci-house-price"
+    # <your_node_tag>:
+    #   cluster_name: "<your_cluster_name>"
+docker:
+  # This option is for backward compatibility and will be removed in the future versions
+  # We suggest using the Azure environment instead
+  # See https://kedro-azureml.readthedocs.io/en/0.2.1/source/03_quickstart.html
+  # Docker image to use during pipeline execution
+  image: ~

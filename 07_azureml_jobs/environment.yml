@@ -1,0 +1,30 @@
+# =============================================================================
+# A custom Azure ML environment that actually contains Kedro.
+# =============================================================================
+# WHY THIS EXISTS
+#   Curated environments like `sklearn-1.5` have scikit-learn and pandas, but
+#   NOT kedro or kedro-azureml. The plugin runs `kedro azureml execute ...` on
+#   the machine, so without them you get:
+#       ModuleNotFoundError: No module named 'kedro'
+#
+# CREATE IT (once, and again whenever conda.yml changes):
+#   cd 07_azureml_jobs
+#   az ml environment create --file environment.yml \
+#     --resource-group rg-azureml-demo --workspace-name mlw-house-price
+#
+# THEN REFERENCE IT:
+#   kedro azureml init ... --azureml-environment kedro-house-price@latest
+# =============================================================================
+
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+
+name: kedro-house-price
+
+# The base container. This Microsoft image is the standard starting point for
+# Azure ML jobs -- it has the Azure ML runtime bits already in place.
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+
+# The packages to add on top, listed in conda.yml next to this file.
+conda_file: conda.yml
+
+description: Kedro + kedro-azureml environment for the house-price pipeline.

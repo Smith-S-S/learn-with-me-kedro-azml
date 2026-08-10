@@ -165,6 +165,375 @@ settings:
 
 ---
 
+## ⚠️ `kedro azureml run` crashes on a compute instance — and how to fix it
+
+Everything above applies to **`az ml job create`**, which happily accepts a
+compute instance. The **`kedro-azureml` plugin is different** — it crashes:
+
+```
+AttributeError: 'ComputeInstance' object has no attribute 'min_instances'
+```
+
+### Why it happens
+
+I traced it. In `kedro_azureml/client.py`, lines 54–57:
+
+```python
+logger.info(
+    f"Creating job on cluster {cluster.name} ({cluster.size}, min instances: {cluster.min_instances}, "
+    f"max instances: {cluster.max_instances})"
+)
+
+pipeline_job = ml_client.jobs.create_or_update(     # ← the real work
+    self.azure_pipeline,
+    experiment_name=config.experiment_name,
+    compute=cluster,
+)
+```
+
+The plugin assumes your compute is an **AmlCompute cluster**, which has
+`min_instances` and `max_instances`. A `ComputeInstance` is a single machine — it
+has no such thing, so the f-string raises before anything is submitted.
+
+### 🎉 The good news: it's *only a log message*
+
+Search the whole package and `min_instances` appears in **exactly one place** —
+that logging line. Nowhere else:
+
+```bash
+grep -rn "min_instances\|max_instances" .venv/Lib/site-packages/kedro_azureml/
+# client.py:55   ...min instances: {cluster.min_instances}...
+# client.py:56   ...max instances: {cluster.max_instances})"
+```
+
+The actual submission passes `compute=cluster` — the **object itself** — and
+Azure ML accepts a compute instance there perfectly well.
+
+**So this isn't a real incompatibility. A cosmetic log line is blocking a job
+that would otherwise run.**
+
+### Fix 1 — Use a cluster (supported, no patching)
+
+The honest recommendation for anything that matters. Create one that costs
+nothing when idle:
+
+```bash
+az ml compute create \
+  --name cpu-cluster --type amlcompute --size Standard_DS3_v2 \
+  --min-instances 0 --max-instances 2
+
+kedro azureml init <sub-id> rg-azureml-demo mlw-house-price \
+  house-price-training cpu-cluster --use-pipeline-data-passing
+```
+
+You lose the instant start-up; you gain the supported path and $0 idle cost.
+
+### Fix 2 — Patch it, and keep your compute instance ✅ *(tested)*
+
+If you want the instance's instant start-up, give `ComputeInstance` the two
+attributes the log line is looking for.
+
+**Add this to `src/house_price/settings.py`:**
+
+```python
+# =============================================================================
+# WORKAROUND: let `kedro azureml run` target a COMPUTE INSTANCE
+# -----------------------------------------------------------------------------
+# kedro-azureml assumes the compute is an AmlCompute CLUSTER and reads
+# .min_instances / .max_instances off it -- but ONLY to print a log message
+# (kedro_azureml/client.py lines 54-57). A ComputeInstance has neither, so the
+# run dies with:
+#     AttributeError: 'ComputeInstance' object has no attribute 'min_instances'
+#
+# A compute instance really is exactly one node, so reporting 1 and 1 is honest.
+# Kedro imports this settings module during bootstrap, which happens before the
+# plugin submits anything -- so the patch is in place by the time it's needed.
+# =============================================================================
+try:
+    from azure.ai.ml.entities import ComputeInstance
+
+    if not hasattr(ComputeInstance, "min_instances"):
+        ComputeInstance.min_instances = property(lambda self: 1)
+        ComputeInstance.max_instances = property(lambda self: 1)
+except ImportError:
+    pass  # azure-ai-ml not installed locally; nothing to patch
+```
+
+Then run as normal:
+```bash
+kedro azureml run
+```
+
+**Why `settings.py`?** Kedro imports `<package>.settings` during
+`bootstrap_project` (see `kedro/framework/project/__init__.py:451`), which runs
+*before* the plugin's submit code. Verified on this project — the module is in
+`sys.modules` after bootstrap.
+
+**Verified output of the patch:**
+```
+AmlCompute has min_instances     : False
+ComputeInstance has min_instances: False
+after patch                      : True
+reads on a real object -> name=ci-house-price size=Standard_DS11_v2 min=1 max=1
+
+THE LOG LINE NOW WORKS:
+Creating job on cluster ci-house-price (Standard_DS11_v2, min instances: 1, max instances: 1)
+```
+
+> ⚠️ **What this does and doesn't promise.** It fixes the crash, which is a
+> logging bug. It does **not** make the plugin *officially* support compute
+> instances — a future version could depend on cluster behaviour for real. Keep
+> the patch, but don't be shocked if an upgrade needs a rethink.
+
+### Fix 3 — Edit the library directly (works, but fragile)
+
+Open `.venv/Lib/site-packages/kedro_azureml/client.py` and simplify line 54:
+
+```python
+logger.info(f"Creating job on compute {cluster.name} ({cluster.size})")
+```
+
+Effective and honest, but **every `pip install --upgrade` wipes it**, and
+teammates won't have it. Fix 2 lives in your repo and travels with the project.
+
+---
+
+## 🔎 Two more things in your `azureml.yml` worth checking
+
+While tracing the crash I read the generated config. Two things there will bite
+you *after* the crash is fixed.
+
+### 1. `--docker-image` and `--azureml-environment` are different slots
+
+If you ran `init` with `--docker-image azureml://registries/...`, you get:
+
+```yaml
+  environment_name: ~                                                   # empty
+docker:
+  image: azureml://registries/azureml/environments/sklearn-1.5/labels/latest
+```
+
+That's the wrong slot. Here's `generator.py:137-145` deciding what to use:
+
+```python
+def _resolve_azure_environment(self):
+    if image := (self.docker_image or (self.config.docker.image if self.config.docker else None)):
+        return Environment(image=image)          # ← treats it as a DOCKER IMAGE
+    else:
+        return self.aml_env or self.config.azure.environment_name
+```
+
+**`docker.image` wins**, and an `azureml://` URI is not a Docker image reference —
+Azure will try to pull a container literally named `azureml://registries/...`.
+
+**Fix:** use `--azureml-environment` (or `--aml-env`), not `--docker-image`. Or
+edit `azureml.yml` directly:
+
+```yaml
+azure:
+  environment_name: kedro-house-price@latest
+docker:
+  image: ~          # ← must be empty, or it takes priority
+```
+
+### 1b. ⚠️ No `azureml:` prefix in `environment_name`
+
+This one costs an hour if you don't know it. These look interchangeable. **They
+are not:**
+
+```yaml
+environment_name: azureml:kedro-house-price@latest   # ❌ 404s
+environment_name: kedro-house-price@latest           # ✅ works
+```
+
+The `azureml:` prefix is the convention in **`az ml job` YAML files** (like our
+`pipeline-job.yml`) — there it's correct and required. But kedro-azureml passes
+this string **straight to the Python SDK**, which treats the whole thing as the
+environment *name*. So it goes looking for an environment literally called
+`azureml:kedro-house-price`, doesn't find it, and 404s.
+
+The error gives you nothing to work with:
+
+```
+ResourceNotFoundError: (UserError) System.Net.Http.HttpConnectionResponseContent
+  ...in _environment_versions_operations.py, get_next
+```
+
+Reproduced against a live workspace, same environment, prefix the only difference:
+
+```
+OK    get(name='kedro-house-price',         label='latest') -> version 1
+FAIL  get(name='azureml:kedro-house-price', label='latest') -> ResourceNotFoundError
+```
+
+**Rule of thumb:** `azureml:` in `az ml` YAML files, **bare name** in
+`azureml.yml`. Same for the compute — `cluster_name: "ci-house-price"`, no prefix.
+
+### 2. The curated `sklearn-1.5` environment has no Kedro in it
+
+Whichever slot you use, `sklearn-1.5` contains scikit-learn and pandas — **not
+`kedro` or `kedro-azureml`**. The plugin runs `kedro azureml execute ...` on the
+machine, so you'll get `ModuleNotFoundError: No module named 'kedro'`.
+
+Our hand-written `pipeline-job.yml` dodged this because its command starts with
+`pip install -r requirements.txt`. **The plugin does not do that for you.** Build
+a custom environment that includes them — see the `environment.yml` / `conda.yml`
+in [`README.md`](README.md#step-3).
+
+---
+
+## ✅ The full working sequence (after the `settings.py` patch)
+
+You've added the patch. Here is the whole run, in order.
+
+### Step 1 — Build an environment that contains Kedro
+
+Do this **first** — `init` only writes a config file, but `run` will fail
+immediately without an environment that has `kedro` in it.
+
+`environment.yml`:
+```yaml
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: kedro-house-price
+image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
+conda_file: conda.yml
+```
+
+`conda.yml`:
+```yaml
+name: kedro-house-price
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - kedro
+      - kedro-azureml
+      - kedro-datasets
+      - pandas
+      - scikit-learn
+```
+
+```bash
+az ml environment create --file environment.yml \
+  --resource-group rg-azureml-demo --workspace-name mlw-house-price
+```
+
+### Step 2 — Run `init` with the right flags
+
+```bash
+cd house-price
+
+kedro azureml init \
+  1268fd42-f434-4927-a1a6-632642e6d7de \
+  rg-azureml-demo \
+  mlw-house-price \
+  house-price-training \
+  ci-house-price \
+  --azureml-environment kedro-house-price@latest \
+  --use-pipeline-data-passing
+```
+
+Note what changed from your earlier attempt: **`--azureml-environment`, not
+`--docker-image`.**
+
+#### Two rules the CLI enforces
+
+Straight from `cli.py`, these raise a `UsageError` before anything happens:
+
+| Rule | The error if you break it |
+|---|---|
+| **Exactly one** of `--docker-image` / `--azureml-environment` | *"You cannot specify both"* / *"You must specify either"* |
+| **Either** `--use-pipeline-data-passing` **or** both `-a` and `-c` | *"You need to specify storage account (-a) and container name (-c) or enable pipeline data passing"* |
+
+> 📌 **`init` overwrites `conf/base/azureml.yml` without asking.** No prompt, no
+> backup. That's convenient for re-running — but any hand edits you made to that
+> file are gone. Edit the file *or* re-run `init`, not both.
+
+#### Why `--azureml-environment` also changes *how your code gets there*
+
+This is a subtle but important side effect. From `cli.py`:
+
+```python
+"code_directory": "." if azureml_environment else "~",
+```
+
+| Flag you used | `code_directory` | What it means |
+|---|---|---|
+| `--azureml-environment` | `"."` | **Code upload flow.** Your local project is uploaded per run. The environment only needs Kedro + libraries. |
+| `--docker-image` | `~` | **Docker flow.** Your code is expected to already be *inside* the image. |
+
+For our purposes the **code upload flow is what you want** — edit `nodes.py`,
+re-run, and the change ships. No image rebuild.
+
+### Step 3 — Check the generated config before running
+
+```bash
+cat conf/base/azureml.yml
+```
+
+Four things to confirm:
+
+```yaml
+azure:
+  environment_name: kedro-house-price@latest   # ✅ set, not ~
+  code_directory: .                                    # ✅ code upload flow
+  pipeline_data_passing:
+    enabled: True                                      # ✅ MemoryDatasets survive
+  compute:
+    __default__:
+      cluster_name: "ci-house-price"                   # ✅ your compute instance
+docker:
+  image: ~                                             # ✅ MUST be empty
+```
+
+> ⚠️ **If `docker.image` has a value, it wins** and `environment_name` is ignored
+> entirely (`generator.py:_resolve_azure_environment`). This is the single most
+> likely thing to still be wrong.
+
+### Step 4 — Make sure the instance is running, then go
+
+```bash
+az ml compute show --name ci-house-price \
+  --resource-group rg-azureml-demo --workspace-name mlw-house-price \
+  --query "state" -o tsv                    # want: Running
+
+az ml compute start --name ci-house-price   # if it isn't
+
+kedro azureml run
+```
+
+If the patch is working, you'll see the log line that used to crash:
+
+```
+Creating job on cluster ci-house-price (Standard_DS11_v2, min instances: 1, max instances: 1)
+```
+
+Then the job appears in **ml.azure.com → Jobs → house-price-training**, drawn as
+**one box per Kedro node** — the six-box graph the hand-written YAML couldn't
+produce.
+
+### ⚠️ One trap: `init` creates an *empty* `.amlignore`
+
+If you don't already have one, `init` writes an **empty** `.amlignore`. And an
+empty `.amlignore` excludes **nothing** — while still taking precedence over
+`.gitignore`. Net result: your entire `.venv` uploads on every run.
+
+If `.amlignore` already exists, `init` leaves it alone and prints a yellow
+warning instead. So:
+
+```bash
+# make sure a REAL one is in place before running init
+copy 07_azureml_jobs\.amlignore house-price\
+```
+
+Check it isn't empty:
+```bash
+cat .amlignore | head -3    # should show real rules, not nothing
+```
+
+---
+
 ## 💸 The cost difference, honestly
 
 This is the part that actually matters, so here it is with numbers.
@@ -203,6 +572,11 @@ az ml compute list -o table     # run this before you finish for the day
 | `Compute not found` | Wrong name, or it's in a different workspace. `az ml compute list -o table`. |
 | It worked, then stopped working next morning | Idle shutdown did its job. Start it again. |
 | Bill higher than expected | The instance was Running all week. This is the #1 Azure ML surprise bill. |
+| **`AttributeError: 'ComputeInstance' object has no attribute 'min_instances'`** | **`kedro azureml run` only** — the plugin assumes a cluster. It's a logging bug, not a real incompatibility. See the section above: patch `settings.py`, or use a cluster. |
+| `kedro azureml run` → `ModuleNotFoundError: No module named 'kedro'` | Your environment has no Kedro. Curated images like `sklearn-1.5` don't include it. |
+| Azure can't pull an image called `azureml://registries/...` | You passed an environment URI to `--docker-image`. Use `--azureml-environment`, and set `docker.image: ~`. |
+| **`ResourceNotFoundError: (UserError) System.Net.Http.HttpConnectionResponseContent`** in `_environment_versions_operations` | **Drop the `azureml:` prefix.** In `azureml.yml` use `environment_name: kedro-house-price@latest`, **not** `azureml:kedro-house-price@latest`. See below. |
+| **`No module named 'cachetools'`** → *"Failed to load kedro_azureml.cli commands"* → **`Error: No such command 'azureml'`** | **kedro-azureml imports `cachetools` but doesn't declare it as a dependency** (its own packaging bug). Add `cachetools` to `conda.yml`, rebuild the environment, re-run. It works on your laptop only because cachetools happens to be installed there. |
 
 ---
 

@@ -1,6 +1,9 @@
 ##########################
 # KEDRO PROJECT
 
+# quick book delete repeat
+/quick_book_Delete_Repeat.md
+
 # ignore all local configuration
 conf/local/**
 !conf/local/.gitkeep

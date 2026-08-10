@@ -576,7 +576,7 @@ kedro azureml init \
   mlw-house-price \                        # 3. WORKSPACE_NAME
   house-price-training \                   # 4. EXPERIMENT_NAME
   cpu-cluster \                            # 5. CLUSTER_NAME (or ci-house-price)
-  --azureml-environment azureml:kedro-house-price@latest \
+  --azureml-environment kedro-house-price@latest \
   --use-pipeline-data-passing
 ```
 
@@ -658,7 +658,7 @@ dependencies:
 az ml environment create --file environment.yml
 ```
 
-Then pass `--azureml-environment azureml:kedro-house-price@latest` to `init`.
+Then pass `--azureml-environment kedro-house-price@latest` to `init`.
 
 ### Step 4 — run it
 ```bash

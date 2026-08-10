@@ -44,3 +44,25 @@ CONFIG_LOADER_ARGS = {
 # Class that manages the Data Catalog.
 # from kedro.io import DataCatalog
 # DATA_CATALOG_CLASS = DataCatalog
+
+# =============================================================================
+# WORKAROUND: let `kedro azureml run` target a COMPUTE INSTANCE
+# -----------------------------------------------------------------------------
+# kedro-azureml assumes the compute is an AmlCompute CLUSTER and reads
+# .min_instances / .max_instances off it -- but ONLY to print a log message
+# (kedro_azureml/client.py lines 54-57). A ComputeInstance has neither, so the
+# run dies with:
+#     AttributeError: 'ComputeInstance' object has no attribute 'min_instances'
+#
+# A compute instance really is exactly one node, so reporting 1 and 1 is honest.
+# Kedro imports this settings module during bootstrap, which happens before the
+# plugin submits anything -- so the patch is in place by the time it's needed.
+# =============================================================================
+try:
+    from azure.ai.ml.entities import ComputeInstance
+
+    if not hasattr(ComputeInstance, "min_instances"):
+        ComputeInstance.min_instances = property(lambda self: 1)
+        ComputeInstance.max_instances = property(lambda self: 1)
+except ImportError:
+    pass  # azure-ai-ml not installed locally; nothing to patch

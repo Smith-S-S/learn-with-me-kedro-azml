@@ -21,7 +21,14 @@ house_data:
 regressor:
   type: pickle.PickleDataset          # saves the trained model to a file
   filepath: data/06_models/regressor.pickle
-  versioned: true                     # keeps a timestamped copy of every model
+  versioned: true   
+  
+  
+# regressor:
+#   type: pickle.PickleDataset
+#   filepath: abfs://models/regressor.pickle    # was data/06_models/regressor.pickle
+#   credentials: azure_blob
+#   versioned: true                  # keeps a timestamped copy of every model
 
 metrics:
   type: json.JSONDataset
