@@ -314,25 +314,39 @@ Expected: `{"predicted_price":465276.13,"currency":"USD"}`
 
 ```bash
 # Consumption tier = cheapest for learning (pay per call, no monthly fee)
-az apim create ^
-  --name house-price-apim ^
-  --resource-group my-ml-rg ^
-  --publisher-name "My Company" ^
-  --publisher-email you@example.com ^
-  --sku-name Consumption ^
+az apim create \
+  --name house-price-apim \
+  --resource-group rg-azureml-demo \
+  --publisher-name "My Company" \
+  --publisher-email [EMAIL_ADDRESS] \
+  --sku-name Consumption \
   --location eastus
 ```
 
 ### 3. Import your API into APIM
+
+> 🛑 **Stop — this step and the two after it need your API to have a public
+> address, and `localhost` will not do.** APIM runs in Azure and cannot reach
+> your laptop.
+>
+> **👉 Work through [`CONNECTING_API_TO_APIM.md`](CONNECTING_API_TO_APIM.md)
+> instead.** It covers where to actually put the API (dev tunnel, Azure Container
+> Instances, or App Service), how to export the OpenAPI spec **without a running
+> server**, and the FastAPI-3.1-vs-APIM-3.0 problem that breaks the import below.
+>
+> The commands here are the shape of the thing; that file is the working version.
+
 ```bash
 # FastAPI publishes an OpenAPI spec at /openapi.json describing every endpoint.
 # APIM can read that file and configure itself -- no manual endpoint entry.
-az apim api import ^
-  --resource-group my-ml-rg ^
-  --service-name house-price-apim ^
-  --path houseprice ^
-  --specification-format OpenApi ^
-  --specification-url http://<your-backend-address>/openapi.json ^
+# NOTE: --specification-url needs a URL APIM CAN REACH. See the file above for
+# the offline alternative (--specification-path).
+az apim api import \
+  --resource-group rg-azureml-demo \
+  --service-name house-price-apim \
+  --path houseprice \
+  --specification-format OpenApi \
+  --specification-url https://hmk5m4mn-8000.jpe1.devtunnels.ms/openapi.json \
   --api-id house-price-api
 ```
 

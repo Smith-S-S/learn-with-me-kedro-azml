@@ -88,6 +88,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.openapi_version = "3.0.3"
 
 # =============================================================================
 # THE SHAPE OF THE DATA (Pydantic models)
