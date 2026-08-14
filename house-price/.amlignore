@@ -25,8 +25,11 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# SECRETS -- never upload
-conf/local/
+# SECRETS -- keep conf/local/ dir so Kedro can find it, but block credentials
+conf/local/credentials*
+conf/local/*.key
+conf/local/*.pem
+
 .env
 *.pem
 *.key

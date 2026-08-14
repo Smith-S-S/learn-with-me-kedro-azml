@@ -19,6 +19,7 @@
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 
 name: kedro-house-price
+version: 2.1
 
 # The base container. This Microsoft image is the standard starting point for
 # Azure ML jobs -- it has the Azure ML runtime bits already in place.
@@ -27,4 +28,4 @@ image: mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:latest
 # The packages to add on top, listed in conda.yml next to this file.
 conda_file: conda.yml
 
-description: Kedro + kedro-azureml environment for the house-price pipeline.
+description: Kedro + kedro-azureml environment for the house-price pipeline test version 1.2.
