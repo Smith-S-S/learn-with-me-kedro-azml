@@ -5,6 +5,7 @@ notebook
 pandas
 scikit-learn
 kedro-datasets
+python-dotenv    # settings.py reads .env so `kedro azureml run` needs no exports
 
 # --- API layer (main.py) ---
 fastapi          # the web framework that turns our model into an API

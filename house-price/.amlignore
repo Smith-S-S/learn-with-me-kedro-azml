@@ -25,15 +25,19 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# SECRETS -- keep conf/local/ dir so Kedro can find it, but block credentials
+# SECRETS & LOCAL OVERRIDES -- keep conf/local/ dir so Kedro can find it, but block specific files
 conf/local/credentials*
 conf/local/*.key
 conf/local/*.pem
+conf/local/catalog.yml
 
 .env
 *.pem
 *.key
-credentials.yml
+# NOTE: no global `credentials.yml` rule here. That pattern is unanchored, so it
+# also blocked conf/base/credentials.yml -- which the remote job NEEDS, and which
+# holds no secret (only a ${oc.env:...} reference). The real secrets are the
+# conf/local/ files above, and they stay blocked.
 
 # Local data and models. The job regenerates these, and Azure stores its own
 # copies as job outputs.

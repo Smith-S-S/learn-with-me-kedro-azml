@@ -2,6 +2,47 @@
 from the Kedro defaults. For further information, including these default values, see
 https://docs.kedro.org/en/0.19.14/kedro_project_setup/settings.html."""
 
+# =============================================================================
+# CREDENTIALS PLUMBING -- so a bare `kedro azureml run` just works
+# -----------------------------------------------------------------------------
+# Kedro imports this module during bootstrap, BOTH on your laptop (before the
+# plugin submits the job) and inside the Azure container (before the catalog is
+# built). That makes it the one place that can serve both sides.
+#
+# LOCALLY: read .env, so you never have to `export` anything by hand.
+# ON AZURE: .env is deliberately not uploaded (.amlignore) -- but kedro-azureml
+#   already ships the key inside its own KEDRO_AZURE_RUNNER_CONFIG blob, so we
+#   just unpack it back into AZURE_STORAGE_ACCOUNT_KEY. That is the variable
+#   conf/base/credentials.yml interpolates with ${oc.env:...}.
+# =============================================================================
+import json
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).parents[2] / ".env")
+except ImportError:
+    # Only needed on your laptop. The Azure container has no .env to read (it is
+    # blocked in .amlignore), so python-dotenv is deliberately NOT a dependency
+    # of the Azure ML environment -- don't fail the job over a missing import.
+    pass
+
+if not os.getenv("AZURE_STORAGE_ACCOUNT_KEY"):
+    print("~~~~~~~~~~~~~~ not found AZURE_STORAGE_ACCOUNT_KEY~~~~~~~~~~~~~")
+    _runner_config = os.getenv("KEDRO_AZURE_RUNNER_CONFIG")
+    print("~~~~~~~~~~~~~~ found KEDRO_AZURE_RUNNER_CONFIG~~~~~~~~~~~~~", _runner_config)
+    print("===========================>", _runner_config)
+    if _runner_config:
+        _key = json.loads(_runner_config).get("storage_account_key")
+        print("~~~~~~~~~~~~~~ found storage_account_key~~~~~~~~~~~~~", _key)
+        print("===========================>", _key)
+        if _key:
+            os.environ["AZURE_STORAGE_ACCOUNT_KEY"] = _key
+            print("~~~~~~~~~~~~~~ found storage_account_key~~~~~~~~~~~~~", os.getenv("AZURE_STORAGE_ACCOUNT_KEY"))
+            print("===========================>", os.getenv("AZURE_STORAGE_ACCOUNT_KEY"))
+
 # Instantiated project hooks.
 # For example, after creating a hooks.py and defining a ProjectHooks class there, do
 # from house_price.hooks import ProjectHooks

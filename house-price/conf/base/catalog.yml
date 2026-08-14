@@ -12,24 +12,30 @@
 #
 # Any name used in a node but NOT listed here (like X_train) is kept in memory
 # only -- Kedro calls these "MemoryDataset" and they vanish after the run.
+#
+# ABFS PATH FORMAT -- write it as abfs://<container>/<path>, NOT the
+# abfs://<container>@<account>.dfs.core.windows.net/<path> form you see in Azure
+# docs. Kedro parses filepaths with fsspec's infer_storage_options and then keeps
+# only host + path (kedro/io/core.py _parse_filepath), so the "<container>@" part
+# is silently DISCARDED. adlfs then reads the hostname as the container name and
+# the save dies with a very misleading:
+#     ContainerNotFound: The specified container does not exist
+# The account name comes from `credentials: azure_blob` instead -- see
+# conf/base/credentials.yml.
 # =============================================================================
 
 house_data:
   type: pandas.CSVDataset
-  filepath: data/01_raw/house_data.csv
+  filepath: abfs://kedro-temp/data/01_raw/house_data.csv
+  credentials: azure_blob
 
 regressor:
-  type: pickle.PickleDataset          # saves the trained model to a file
-  filepath: data/06_models/regressor.pickle
+  type: pickle.PickleDataset          
+  filepath: abfs://kedro-temp/data/06_models/regressor.pickle
   versioned: true   
-  
-  
-# regressor:
-#   type: pickle.PickleDataset
-#   filepath: abfs://models/regressor.pickle    # was data/06_models/regressor.pickle
-#   credentials: azure_blob
-#   versioned: true                  # keeps a timestamped copy of every model
+  credentials: azure_blob
 
 metrics:
   type: json.JSONDataset
-  filepath: data/08_reporting/metrics.json
+  filepath: abfs://kedro-temp/data/08_reporting/metrics.json
+  credentials: azure_blob
